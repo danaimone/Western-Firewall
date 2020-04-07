@@ -1,0 +1,36 @@
+# This is a comment
+#
+
+# What about empty lines
+
+# Existential without spaces
+#
+ext1
+
+# Existential with spaces
+#
+  ext2
+
+# Existential with spaces and a comment
+#
+  ext3   # Here is the comment
+
+
+# Short options
+#
+short1=value
+
+# Short option with spaces and a comment
+#
+    short 2 = value 2  # Here is another comment
+
+# Long Options
+#
+long1 << EOF
+hello
+world
+EOF
+
+
+
+
