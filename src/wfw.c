@@ -34,6 +34,8 @@
 /* Globals  */
 static char *conffile = STR(SYSCONFDIR) "/wfw.cfg";
 static bool printusage = false;
+static char broadcastMac = 0x33;
+static char broadcastMac2 = 0xff;
 
 /* Structs */
 typedef struct EthernetFrame {
@@ -53,6 +55,9 @@ static void receiveBroadcast(int tapDevice, int bc, void *buffer, hashtable *kno
 static int macCmp(void *s1, void *s2);
 
 static void freeKeys(void *key, void *val);
+
+static bool checkIfBroadcast(char *addresses);
+}
 
 /* Prototypes */
 
@@ -297,13 +302,13 @@ int mkfdset(fd_set *set, ...) {
 
 
 static void sendTo(int tapDevice, int uc, void *buffer, struct sockaddr_in bcaddress, hashtable *knownAddresses) {
-    ssize_t rdct = read(tap, buffer, sizeof(frame));
+    ssize_t rdct = read(tapDevice, buffer, sizeof(frame));
     if (rdct < 0) {
         perror("read");
     } else {
         frame *tempBuf = buffer;
         struct sockaddr_in *out;
-        if (hthaskey(*knownAddresses, tempBuf->destMac, MACSIZE)) {
+        if (hthaskey(*knownAddresses, tempBuf->destMac, MACSIZE) && !checkIfBroadcast(tempBuf->destMac)) {
             out = htfind(*knownAddresses, tempBuf->destMac, MACSIZE);
         } else {
             out = &bcaddress;
@@ -355,6 +360,17 @@ static int macCmp(void *s1, void *s2) {
 static void freeKeys(void *key, void *value) {
     free(key);
     free(value);
+}
+
+/*
+ * In this function, we are checking the MAC address 33:33:... at the first two bytes to see if the mac
+ * address being received in send is a broadcast.
+ */
+static bool checkIfBroadcast(char address[MACSIZE]) {
+    bool ret;
+    if (memcmp(&address[0], &broadcastMac, 1) == 0 && memcmp(&address[1], &broadcastMac, 1) == 0)
+        ret = true;
+    return ret;
 }
 
 /* Bridge
