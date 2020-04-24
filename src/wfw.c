@@ -18,7 +18,6 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <ws2tcpip.h>
 
 /* Constants */
 #define STR1(x)   #x
