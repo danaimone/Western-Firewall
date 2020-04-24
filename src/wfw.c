@@ -34,7 +34,6 @@
 static char *conffile = STR(SYSCONFDIR) "/wfw.cfg";
 static bool printusage = false;
 static char broadcastMac = 0x33;
-static char broadcastMac2 = 0xff;
 
 /* Structs */
 typedef struct EthernetFrame {
@@ -56,7 +55,7 @@ static int macCmp(void *s1, void *s2);
 static void freeKeys(void *key, void *val);
 
 static bool checkIfBroadcast(char *addresses);
-}
+
 
 /* Prototypes */
 
