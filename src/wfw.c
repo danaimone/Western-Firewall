@@ -44,7 +44,7 @@ typedef struct EthernetFrame {
 } frame;
 
 /* Helper Functions */
-static void sendTo(int tapDevice, int uc, void *buffer, struct sockaddr_in bcaddress, hashtable *knownAddresses);
+static void sendTap(int tapDevice, int uc, void *buffer, struct sockaddr_in bcaddress, hashtable *knownAddresses);
 
 static void receiveUnicast(int tapDevice, int uc, void *buffer);
 
@@ -299,7 +299,7 @@ int mkfdset(fd_set *set, ...) {
 }
 
 
-static void sendTo(int tapDevice, int uc, void *buffer, struct sockaddr_in bcaddress, hashtable *knownAddresses) {
+static void sendTap(int tapDevice, int uc, void *buffer, struct sockaddr_in bcaddress, hashtable *knownAddresses) {
     ssize_t rdct = read(tapDevice, buffer, sizeof(frame));
     if (rdct < 0) {
         perror("read");
@@ -390,7 +390,7 @@ void bridge(int tap, int uc, int bc, struct sockaddr_in bcaddr) {
 
     while (0 <= select(1 + maxfd, &rdset, NULL, NULL, NULL)) {
         if (FD_ISSET(tap, &rdset)) { // Tap device
-            sendTo(tap, uc, &buffer, bcaddr, &knownAddresses);
+            sendTap(tap, uc, &buffer, bcaddr, &knownAddresses);
         } else if (FD_ISSET(uc, &rdset)) { // UC send/receive
             receiveUnicast(tap, uc, &buffer);
         } else if (FD_ISSET(bc, &rdset)) { // Broadcast packets
