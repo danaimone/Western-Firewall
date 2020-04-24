@@ -1,3 +1,6 @@
+/*
+ * Dan Aimone
+ */
 #include "conf.h"
 #include "hash.h"
 #include <arpa/inet.h>
@@ -15,6 +18,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <ws2tcpip.h>
 
 /* Constants */
 #define STR1(x)   #x
@@ -24,12 +28,31 @@
 #define BROADCAST "broadcast"
 #define ANYIF     "0.0.0.0"
 #define ANYPORT   "0"
+#define MACSIZE 6
 
 
 /* Globals  */
-static char* conffile   = STR(SYSCONFDIR) "/wfw.cfg";
-static bool  printusage = false;
+static char *conffile = STR(SYSCONFDIR) "/wfw.cfg";
+static bool printusage = false;
 
+/* Structs */
+typedef struct EthernetFrame {
+    char destMac[MACSIZE];
+    char srcMac[MACSIZE];
+    char type[2];
+    char payload[1512];
+} frame;
+
+/* Helper Functions */
+static void sendTo(int tapDevice, int uc, void *buffer, struct sockaddr_in bcaddress, hashtable *knownAddresses);
+
+static void receiveUnicast(int tapDevice, int uc, void *buffer);
+
+static void receiveBroadcast(int tapDevice, int bc, void *buffer, hashtable *knownAddresses);
+
+static int macCmp(void *s1, void *s2);
+
+static void freeKeys(void *key, void *val);
 
 /* Prototypes */
 
@@ -40,7 +63,7 @@ static bool  printusage = false;
  * This function sets the otherwise immutable global variables (above).  
  */
 static
-bool parseoptions(int argc, char* argv[]);
+bool parseoptions(int argc, char *argv[]);
 
 /* Usage
  * cmd   The name by which this program was invoked
@@ -50,7 +73,7 @@ bool parseoptions(int argc, char* argv[]);
  * if the user provides -h on the command line or the options don't parse.  
  */
 static
-void usage(char* cmd, FILE* file);
+void usage(char *cmd, FILE *file);
 
 /* Ensure Tap
  * path     The full path to the tap device.
@@ -62,7 +85,7 @@ void usage(char* cmd, FILE* file);
  * program.   
  */
 static
-int  ensuretap(char* path);
+int ensuretap(char *path);
 
 /* Ensure Socket
  * localaddress   The IPv4 address to bind this socket to.
@@ -72,7 +95,7 @@ int  ensuretap(char* path);
  * the port number are strings.  
  */
 static
-int ensuresocket(char* localaddr, char* port);
+int ensuresocket(char *localaddr, char *port);
 
 /* Make Socket Address
  * address, port  The string representation of an IPv4 socket address.
@@ -81,7 +104,7 @@ int ensuresocket(char* localaddr, char* port);
  * address.  
  */
 static
-struct sockaddr_in makesockaddr(char* address, char* port);
+struct sockaddr_in makesockaddr(char *address, char *port);
 
 /* mkfdset
  * set    The fd_set to populate
@@ -91,56 +114,53 @@ struct sockaddr_in makesockaddr(char* address, char* port);
  * descriptors.  
  */
 static
-int mkfdset(fd_set* set, ...);
+int mkfdset(fd_set *set, ...);
 
 /* Bridge 
  * tap     The local tap device
- * in      The network socket that receives broadcast packets.
- * out     The network socket on with to send broadcast packets.
+ * bc      The network socket that receives broadcast packets.
+ * uc     The network socket on with to send broadcast packets.
  * bcaddr  The broadcast address for the virtual ethernet link.
  *
  * This is the main loop for wfw.  Data from the tap is broadcast on the
  * socket.  Data broadcast on the socket is written to the tap.  
  */
 static
-void bridge(int tap, int in, int out, struct sockaddr_in bcaddr);
+void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr);
 
 /* Main
  * 
  * Mostly, main parses the command line, the conf file, creates the necessary
  * structures and then calls bridge.  Bridge is where the real work is done. 
  */
-int main(int argc, char* argv[]) {
-  int result = EXIT_SUCCESS;
+int main(int argc, char *argv[]) {
+    int result = EXIT_SUCCESS;
 
-  if(!parseoptions(argc, argv)) {
-    usage(argv[0], stderr);
-    result = EXIT_FAILURE;
-  }
-  else if(printusage) {
-    usage(argv[0], stdout);
-  }
-  else {
-    hashtable conf = readconf (conffile);
-    int       tap  = ensuretap (htstrfind (conf, DEVICE));
-    int       out  = ensuresocket(ANYIF, ANYPORT);
-    int       in   = ensuresocket(htstrfind (conf, BROADCAST),
-                                  htstrfind (conf, PORT));
-    struct sockaddr_in
-      bcaddr       = makesockaddr (htstrfind (conf,BROADCAST),
-                                   htstrfind (conf, PORT));
-    
-    bridge(tap, in, out, bcaddr);
-    
-    close(in);
-    close(out);
-    close(tap);
-    htfree(conf);
-  }
+    if (!parseoptions(argc, argv)) {
+        usage(argv[0], stderr);
+        result = EXIT_FAILURE;
+    } else if (printusage) {
+        usage(argv[0], stdout);
+    } else {
+        hashtable conf = readconf(conffile);
+        int tap = ensuretap(htstrfind(conf, DEVICE));
+        int out = ensuresocket(ANYIF, ANYPORT);
+        int in = ensuresocket(htstrfind(conf, BROADCAST),
+                              htstrfind(conf, PORT));
+        struct sockaddr_in
+                bcaddr = makesockaddr(htstrfind(conf, BROADCAST),
+                                      htstrfind(conf, PORT));
 
-  return result;
+        bridge(tap, in, out, bcaddr);
+
+        close(in);
+        close(out);
+        close(tap);
+        htfree(conf);
+    }
+
+    return result;
 }
-
 
 
 /* Parse Options
@@ -148,36 +168,36 @@ int main(int argc, char* argv[]) {
  * see man 3 getopt
  */
 static
-bool parseoptions(int argc, char* argv[]) {
-  static const char* OPTS = "hc:";
+bool parseoptions(int argc, char *argv[]) {
+    static const char *OPTS = "hc:";
 
-  bool parsed = true;
+    bool parsed = true;
 
-  char c = getopt(argc, argv, OPTS);
-  while(c != -1) {
-    switch (c) {
-    case 'c':
-      conffile = optarg;
-      break;
-        
-    case 'h':
-      printusage = true;
-      break;
+    char c = getopt(argc, argv, OPTS);
+    while (c != -1) {
+        switch (c) {
+            case 'c':
+                conffile = optarg;
+                break;
 
-    case '?':
-      parsed = false;
-      break;
+            case 'h':
+                printusage = true;
+                break;
+
+            case '?':
+                parsed = false;
+                break;
+        }
+
+        c = parsed ? getopt(argc, argv, OPTS) : -1;
     }
 
-    c = parsed ? getopt(argc, argv, OPTS) : -1;
-  }
+    if (parsed) {
+        argc -= optind;
+        argv += optind;
+    }
 
-  if(parsed) {
-    argc -= optind;
-    argv += optind;
-  }
-
-  return parsed;
+    return parsed;
 }
 
 /* Print Usage Statement
@@ -185,22 +205,22 @@ bool parseoptions(int argc, char* argv[]) {
  */
 
 static
-void usage(char* cmd, FILE* file) {
-  fprintf(file, "Usage: %s -c file.cfg [-h]\n", cmd);
+void usage(char *cmd, FILE *file) {
+    fprintf(file, "Usage: %s -c file.cfg [-h]\n", cmd);
 }
 
 /* Ensure Tap device is open.
  *
  */
 static
-int ensuretap(char* path) {
-  int fd = open(path, O_RDWR | O_NOSIGPIPE);
-  if(-1 == fd) {
-    perror("open");
-    fprintf(stderr, "Failed to open device %s\n", path);
-    exit(EXIT_FAILURE);
-  }
-  return fd;
+int ensuretap(char *path) {
+    int fd = open(path, O_RDWR | O_NOSIGPIPE);
+    if (-1 == fd) {
+        perror("open");
+        fprintf(stderr, "Failed to open device %s\n", path);
+        exit(EXIT_FAILURE);
+    }
+    return fd;
 }
 
 /* Ensure socket
@@ -208,31 +228,31 @@ int ensuretap(char* path) {
  * Note the use of atoi, htons, and inet_pton. 
  */
 static
-int ensuresocket(char* localaddr, char* port) {
-  int sock = socket(PF_INET, SOCK_DGRAM, 0);
-  if(-1 == sock) {
-    perror("socket");
-    exit (EXIT_FAILURE);
-  }
+int ensuresocket(char *localaddr, char *port) {
+    int sock = socket(PF_INET, SOCK_DGRAM, 0);
+    if (-1 == sock) {
+        perror("socket");
+        exit(EXIT_FAILURE);
+    }
 
-  int bcast = 1;
-  if (-1 == setsockopt(sock, SOL_SOCKET, SO_BROADCAST,
-                       &bcast, sizeof(bcast))) {
-    perror("setsockopt(broadcast)");
-    exit(EXIT_FAILURE);
-  }
+    int bcast = 1;
+    if (-1 == setsockopt(sock, SOL_SOCKET, SO_BROADCAST,
+                         &bcast, sizeof(bcast))) {
+        perror("setsockopt(broadcast)");
+        exit(EXIT_FAILURE);
+    }
 
-  struct sockaddr_in addr = makesockaddr(localaddr, port);
-  if(0 != bind(sock, (struct sockaddr*)&addr, sizeof(addr))) {
-    perror("bind");
-    char buf[80];
-    fprintf(stderr,
-            "failed to bind to %s\n",
-            inet_ntop(AF_INET, &(addr.sin_addr), buf, 80));
-    exit(EXIT_FAILURE);
-  }
+    struct sockaddr_in addr = makesockaddr(localaddr, port);
+    if (0 != bind(sock, (struct sockaddr *) &addr, sizeof(addr))) {
+        perror("bind");
+        char buf[80];
+        fprintf(stderr,
+                "failed to bind to %s\n",
+                inet_ntop(AF_INET, &(addr.sin_addr), buf, 80));
+        exit(EXIT_FAILURE);
+    }
 
-  return sock;  
+    return sock;
 }
 
 /* Make Sock Addr
@@ -240,15 +260,15 @@ int ensuresocket(char* localaddr, char* port) {
  * Note the use of inet_pton and htons.
  */
 static
-struct sockaddr_in makesockaddr(char* address, char* port) {
-  struct sockaddr_in addr;
-  bzero(&addr, sizeof(addr));
-  addr.sin_len    = sizeof(addr);
-  addr.sin_family = AF_INET;
-  addr.sin_port   = htons(atoi(port));
-  inet_pton(AF_INET, address, &(addr.sin_addr));
+struct sockaddr_in makesockaddr(char *address, char *port) {
+    struct sockaddr_in addr;
+    bzero(&addr, sizeof(addr));
+    addr.sin_len = sizeof(addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(atoi(port));
+    inet_pton(AF_INET, address, &(addr.sin_addr));
 
-  return addr;
+    return addr;
 }
 
 /* mkfdset
@@ -256,23 +276,85 @@ struct sockaddr_in makesockaddr(char* address, char* port) {
  * Note the use of va_list, va_arg, and va_end. 
  */
 static
-int mkfdset(fd_set* set, ...) {
-  int max = 0;
-  
-  FD_ZERO(set);
-  
-  va_list ap;
-  va_start(ap, set);
-  int s = va_arg(ap, int);
-  while(s != 0) {
-    if(s > max)
-      max = s;
-    FD_SET(s, set);
-    s = va_arg(ap, int);
-  }
-  va_end(ap);
-  
-  return max;
+int mkfdset(fd_set *set, ...) {
+    int max = 0;
+
+    FD_ZERO(set);
+
+    va_list ap;
+    va_start(ap, set);
+    int s = va_arg(ap, int);
+    while (s != 0) {
+        if (s > max)
+            max = s;
+        FD_SET(s, set);
+        s = va_arg(ap, int);
+    }
+    va_end(ap);
+
+    return max;
+}
+
+
+static void sendTo(int tapDevice, int uc, void *buffer, struct sockaddr_in bcaddress, hashtable *knownAddresses) {
+    ssize_t rdct = read(tap, buffer, sizeof(frame));
+    if (rdct < 0) {
+        perror("read");
+    } else {
+        frame *tempBuf = buffer;
+        struct sockaddr_in *out;
+        if (hthaskey(*knownAddresses, tempBuf->destMac, MACSIZE)) {
+            out = htfind(*knownAddresses, tempBuf->destMac, MACSIZE);
+        } else {
+            out = &bcaddress;
+        }
+        if (-1 == sendto(uc, buffer, rdct, 0, (struct sockaddr *) out, sizeof(*out))) {
+            perror("sendto");
+        }
+    }
+}
+
+static void receiveUnicast(int tapDevice, int uc, void *buffer) {
+    struct sockaddr_in receive;
+    socklen_t receiveLength = sizeof(receive);
+    ssize_t rdct = recvfrom(uc, buffer, sizeof(frame), 0, (struct sockaddr *) &receive, &receiveLength);
+
+    if (rdct < 0) {
+        perror("recvfrom");
+    } else if (-1 == write(tapDevice, buffer, rdct)) {
+        perror("write");
+    }
+}
+
+static void receiveBroadcast(int tapDevice, int bc, void *buffer, hashtable *knownAddresses) {
+    struct sockaddr_in receive;
+    socklen_t receiveLength = sizeof(receive);
+    ssize_t rdct = recvfrom(bc, buffer, sizeof(frame), 0, (struct sockaddr *) &receive, &receiveLength);
+
+    if (rdct < 0) {
+
+    } else {
+        frame *tempBuffer = buffer;
+        if (!hthaskey(*knownAddresses, tempBuffer->srcMac, MACSIZE)) {
+            char *key = malloc(MACSIZE);
+            memcpy(key, tempBuffer->srcMac, MACSIZE);
+            struct sockaddr_in *receiveSocket = malloc(sizeof(struct sockaddr_in));
+            memcpy(receiveSocket, &receive, sizeof(struct sockaddr_in));
+            htinsert(*knownAddresses, key, MACSIZE, receiveSocket);
+        }
+        if (-1 == write(tapDevice, buffer, rdct)) {
+            perror("write receiveBroadcast");
+        }
+    }
+}
+
+static int macCmp(void *s1, void *s2) {
+    return memcmp(s1, s2, 6);
+}
+
+static void freeKeys(void *key, void *value) {
+    free(key);
+    free(value);
 }
 
 /* Bridge
@@ -280,42 +362,28 @@ int mkfdset(fd_set* set, ...) {
  * Note the use of select, sendto, and recvfrom.  
  */
 static
-void bridge(int tap, int in, int out, struct sockaddr_in bcaddr) {
-#define BUFSZ 1526
+void bridge(int tap, int uc, int bc, struct sockaddr_in bcaddr) {
+    fd_set rdset;
 
-  fd_set rdset;
+    int maxfd = mkfdset(&rdset, tap, bc, uc, 0);
 
-  int maxfd = mkfdset(&rdset, tap, in, 0);
+    frame buffer;
 
-  char buffer[BUFSZ];
+    hashtable knownAddresses = htnew(32, macCmp, freeKeys);
 
-  while(0 <= select(1+maxfd, &rdset, NULL, NULL, NULL)) {
+    // use ethernet frame struct
+    //  char buffer[BUFSZ];
 
-    if(FD_ISSET(tap, &rdset)) {
-      ssize_t rdct = read(tap, buffer, BUFSZ);
-      if(rdct < 0) {
-        perror("read");
-      }
-      else if (-1 == sendto(out, buffer, rdct, 0,
-                            (struct sockaddr*)&bcaddr,
-                            sizeof(bcaddr))){
-        perror("sendto");
-      }
+    while (0 <= select(1 + maxfd, &rdset, NULL, NULL, NULL)) {
+        if (FD_ISSET(tap, &rdset)) { // Tap device
+            sendTo(tap, uc, &buffer, bcaddr, &knownAddresses);
+        } else if (FD_ISSET(uc, &rdset)) { // UC send/receive
+            receiveUnicast(tap, uc, &buffer);
+        } else if (FD_ISSET(bc, &rdset)) { // Broadcast packets
+            receiveBroadcast(tap, bc, &buffer, &knownAddresses);
+        }
+
+        maxfd = mkfdset(&rdset, tap, uc, 0);
     }
-    else if(FD_ISSET(in, &rdset)) {
-      struct sockaddr_in from;
-      socklen_t          flen = sizeof(from);
-      ssize_t rdct = recvfrom(in, buffer, BUFSZ, 0, 
-                              (struct sockaddr*)&from, &flen);
-      if(rdct < 0) {
-        perror("recvfrom");
-      }
-      else if(-1 == write(tap, buffer, rdct)) {
-        perror("write");
-      }
-    }
-    
-    maxfd = mkfdset(&rdset, tap, in, 0);
-  }
-  
+
 }
