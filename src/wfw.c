@@ -33,14 +33,14 @@
 /* Globals  */
 static char *conffile = STR(SYSCONFDIR) "/wfw.cfg";
 static bool printusage = false;
-static char broadcastMac = 0x33;
+static unsigned char broadcastMac = 0x33;
 
 /* Structs */
 typedef struct EthernetFrame {
     char destMac[MACSIZE];
     char srcMac[MACSIZE];
     char type[2];
-    char payload[1512];
+    char payload[1500];
 } frame;
 
 /* Helper Functions */
@@ -323,9 +323,9 @@ static void receiveUnicast(int tapDevice, int uc, void *buffer) {
     ssize_t rdct = recvfrom(uc, buffer, sizeof(frame), 0, (struct sockaddr *) &receive, &receiveLength);
 
     if (rdct < 0) {
-        perror("recvfrom");
+        perror("recvfrom receiveUnicast");
     } else if (-1 == write(tapDevice, buffer, rdct)) {
-        perror("write");
+        perror("write receiveUnicast");
     }
 }
 
@@ -335,7 +335,7 @@ static void receiveBroadcast(int tapDevice, int bc, void *buffer, hashtable *kno
     ssize_t rdct = recvfrom(bc, buffer, sizeof(frame), 0, (struct sockaddr *) &receive, &receiveLength);
 
     if (rdct < 0) {
-
+        perror("recvfrom receiveBroadcast");
     } else {
         frame *tempBuffer = buffer;
         if (!hthaskey(*knownAddresses, tempBuffer->srcMac, MACSIZE)) {
@@ -352,7 +352,7 @@ static void receiveBroadcast(int tapDevice, int bc, void *buffer, hashtable *kno
 }
 
 static int macCmp(void *s1, void *s2) {
-    return memcmp(s1, s2, 6);
+    return memcmp(s1, s2, MACSIZE);
 }
 
 static void freeKeys(void *key, void *value) {
@@ -362,11 +362,19 @@ static void freeKeys(void *key, void *value) {
 
 /*
  * In this function, we are checking the MAC address 33:33:... at the first two bytes to see if the mac
- * address being received in send is a broadcast.
+ * address being received in send is a broadcast. We also set up an unsigned char array for the ff:ff:ff:ff:ff broadcast
+ * address and check that as well.
  */
 static bool checkIfBroadcast(char address[MACSIZE]) {
+    unsigned char broadcastMac[6];
+    for (int i = 0; i < 6; i++) {
+        broadcastMac[i] = 0xff;
+    }
+
     bool ret;
     if (memcmp(&address[0], &broadcastMac, 1) == 0 && memcmp(&address[1], &broadcastMac, 1) == 0)
+        ret = true;
+    else if (memcmp(&address, &broadcastMac, 6) == 0)
         ret = true;
     return ret;
 }
@@ -376,7 +384,7 @@ static bool checkIfBroadcast(char address[MACSIZE]) {
  * Note the use of select, sendto, and recvfrom.  
  */
 static
-void bridge(int tap, int uc, int bc, struct sockaddr_in bcaddr) {
+void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr) {
     fd_set rdset;
 
     int maxfd = mkfdset(&rdset, tap, bc, uc, 0);
