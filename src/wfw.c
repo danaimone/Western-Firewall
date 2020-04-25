@@ -397,7 +397,7 @@ void bridge(int tap, int uc, int bc, struct sockaddr_in bcaddr) {
             receiveBroadcast(tap, bc, &buffer, &knownAddresses);
         }
 
-        maxfd = mkfdset(&rdset, tap, uc, 0);
+        maxfd = mkfdset(&rdset, tap, bc, uc, 0);
     }
 
 }
