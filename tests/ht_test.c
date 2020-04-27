@@ -9,7 +9,7 @@
  *
  */
 START_TEST (test_insert) {
-  hashtable ht = htnew(10, (keycomp)strcmp, NULL);
+  hashtable ht = htnew(0, (keycomp)strcmp, NULL);
   
   ck_assert(htinsert(ht, "World", 6, "World"));
   ck_assert_str_eq(htfind(ht, "World", 6), "World");
@@ -79,7 +79,28 @@ START_TEST (test_dictionary) {
   ck_assert(words == 0);
   
 }
+END_TEST
 
+START_TEST (test_one_start) {
+    hashtable ht = htnew(1, (keycomp)strcmp, NULL);
+  
+  ck_assert(htinsert(ht, "World", 6, "World"));
+  ck_assert_str_eq(htfind(ht, "World", 6), "World");
+  ck_assert(hthaskey(ht, "World", 6));
+  ck_assert(!hthaskey(ht, "WORLD", 6));
+  
+  htfree(ht);
+}
+END_TEST
+
+START_TEST (test_zero_find) {
+  hashtable ht = htnew(0, (keycomp)strcmp, NULL);
+  
+  ck_assert(NULL == htfind(ht, "World", 6));
+  
+  htfree(ht);
+}
+END_TEST
 
 Suite* htsuite() {
 
@@ -90,6 +111,8 @@ Suite* htsuite() {
     tcase_set_timeout(t, 60.0);
     tcase_add_test(t, test_insert);
     tcase_add_test(t, test_dictionary);
+    tcase_add_test(t, test_one_start);
+    tcase_add_test(t, test_zero_find);
     suite_add_tcase(s, t);
   }
   
