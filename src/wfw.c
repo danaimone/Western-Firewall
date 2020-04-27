@@ -346,7 +346,11 @@ static void receiveBroadcast(int tapDevice, int bc, void *buffer, hashtable *kno
             memcpy(key, tempBuffer->srcMac, MACSIZE);
             struct sockaddr_in *receiveSocket = malloc(sizeof(struct sockaddr_in));
             memcpy(receiveSocket, &receive, sizeof(struct sockaddr_in));
-            htinsert(*knownAddresses, key, MACSIZE, receiveSocket);
+            if (!htinsert(*knownAddresses, key, MACSIZE, receiveSocket)) {
+                free(key);
+                free(receiveSocket);
+                perror("htinsert receiveBroadcast")
+            }
         }
         if (-1 == write(tapDevice, buffer, rdct)) {
             perror("write receiveBroadcast");
