@@ -351,6 +351,10 @@ static void receiveBroadcast(int tapDevice, int bc, void *buffer, hashtable *kno
                 free(receiveSocket);
                 perror("htinsert receiveBroadcast")
             }
+        } else { // updating the socket in case the port changes
+            void *value;
+            value = htfind(*knownAddresses, tempBuffer->srcMac, MACSIZE);
+            memcpy(value, &receive, sizeof(struct sockaddr_in));
         }
         if (-1 == write(tapDevice, buffer, rdct)) {
             perror("write receiveBroadcast");
