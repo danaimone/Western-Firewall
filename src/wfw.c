@@ -31,17 +31,17 @@
 
 
 /* Globals  */
-static char *conffile = STR(SYSCONFDIR) "/wfw.cfg";
-static bool printusage = false;
+static char          *conffile    = STR(SYSCONFDIR) "/wfw.cfg";
+static bool          printusage   = false;
 static unsigned char broadcastMac = 0x33;
 
 /* Structs */
 typedef struct EthernetFrame {
     char destMac[MACSIZE];
     char srcMac[MACSIZE];
-    char type[2];
+    char type[2]; // TODO: change to short
     char payload[1500];
-} frame;
+}                    frame;
 
 /* Helper Functions */
 static void sendTap(int tapDevice, int uc, void *buffer, struct sockaddr_in bcaddress, hashtable *knownAddresses);
@@ -54,7 +54,7 @@ static int macCmp(void *s1, void *s2);
 
 static void freeKeys(void *key, void *val);
 
-static bool checkIfBroadcast(char *addresses);
+static bool isBroadcast(char *address);
 
 
 /* Prototypes */
@@ -145,14 +145,14 @@ int main(int argc, char *argv[]) {
     } else if (printusage) {
         usage(argv[0], stdout);
     } else {
-        hashtable conf = readconf(conffile);
-        int tap = ensuretap(htstrfind(conf, DEVICE));
-        int out = ensuresocket(ANYIF, ANYPORT);
-        int in = ensuresocket(htstrfind(conf, BROADCAST),
-                              htstrfind(conf, PORT));
+        hashtable conf   = readconf(conffile);
+        int       tap    = ensuretap(htstrfind(conf, DEVICE));
+        int       out    = ensuresocket(ANYIF, ANYPORT);
+        int       in     = ensuresocket(htstrfind(conf, BROADCAST),
+                                        htstrfind(conf, PORT));
         struct sockaddr_in
-                bcaddr = makesockaddr(htstrfind(conf, BROADCAST),
-                                      htstrfind(conf, PORT));
+                  bcaddr = makesockaddr(htstrfind(conf, BROADCAST),
+                                        htstrfind(conf, PORT));
 
         bridge(tap, in, out, bcaddr);
 
@@ -266,9 +266,9 @@ static
 struct sockaddr_in makesockaddr(char *address, char *port) {
     struct sockaddr_in addr;
     bzero(&addr, sizeof(addr));
-    addr.sin_len = sizeof(addr);
+    addr.sin_len    = sizeof(addr);
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(atoi(port));
+    addr.sin_port   = htons(atoi(port));
     inet_pton(AF_INET, address, &(addr.sin_addr));
 
     return addr;
@@ -286,12 +286,14 @@ int mkfdset(fd_set *set, ...) {
 
     va_list ap;
     va_start(ap, set);
-    int s = va_arg(ap, int);
+    int s   = va_arg(ap,
+    int);
     while (s != 0) {
         if (s > max)
             max = s;
         FD_SET(s, set);
-        s = va_arg(ap, int);
+        s = va_arg(ap,
+        int);
     }
     va_end(ap);
 
@@ -304,12 +306,10 @@ static void sendTap(int tapDevice, int uc, void *buffer, struct sockaddr_in bcad
     if (rdct < 0) {
         perror("read");
     } else {
-        frame *tempBuf = buffer;
-        struct sockaddr_in *out;
+        frame              *tempBuf = buffer;
+        struct sockaddr_in *out     = &bcaddress;
         if (hthaskey(*knownAddresses, tempBuf->destMac, MACSIZE) && !checkIfBroadcast(tempBuf->destMac)) {
             out = htfind(*knownAddresses, tempBuf->destMac, MACSIZE);
-        } else {
-            out = &bcaddress;
         }
         if (-1 == sendto(uc, buffer, rdct, 0, (struct sockaddr *) out, sizeof(*out))) {
             perror("sendto");
@@ -319,8 +319,9 @@ static void sendTap(int tapDevice, int uc, void *buffer, struct sockaddr_in bcad
 
 static void receiveUnicast(int tapDevice, int uc, void *buffer) {
     struct sockaddr_in receive;
-    socklen_t receiveLength = sizeof(receive);
-    ssize_t rdct = recvfrom(uc, buffer, sizeof(frame), 0, (struct sockaddr *) &receive, &receiveLength);
+    socklen_t          receiveLength = sizeof(receive);
+    ssize_t            rdct          = recvfrom(uc, buffer, sizeof(frame), 0, (struct sockaddr *) &receive,
+                                                &receiveLength);
 
     if (rdct < 0) {
         perror("recvfrom receiveUnicast");
@@ -331,8 +332,9 @@ static void receiveUnicast(int tapDevice, int uc, void *buffer) {
 
 static void receiveBroadcast(int tapDevice, int bc, void *buffer, hashtable *knownAddresses) {
     struct sockaddr_in receive;
-    socklen_t receiveLength = sizeof(receive);
-    ssize_t rdct = recvfrom(bc, buffer, sizeof(frame), 0, (struct sockaddr *) &receive, &receiveLength);
+    socklen_t          receiveLength = sizeof(receive);
+    ssize_t            rdct          = recvfrom(bc, buffer, sizeof(frame), 0, (struct sockaddr *) &receive,
+                                                &receiveLength);
 
     if (rdct < 0) {
         perror("recvfrom receiveBroadcast");
@@ -365,16 +367,13 @@ static void freeKeys(void *key, void *value) {
  * address being received in send is a broadcast. We also set up an unsigned char array for the ff:ff:ff:ff:ff broadcast
  * address and check that as well.
  */
-static bool checkIfBroadcast(char address[MACSIZE]) {
-    unsigned char broadcastMac[6];
-    for (int i = 0; i < 6; i++) {
-        broadcastMac[i] = 0xff;
-    }
+static bool isBroadcast(char *address) {
+    unsigned long broadcastMac2 = 0xffffffffffff;
 
     bool ret;
     if (memcmp(&address[0], &broadcastMac, 1) == 0 && memcmp(&address[1], &broadcastMac, 1) == 0)
         ret = true;
-    else if (memcmp(&address, &broadcastMac, 6) == 0)
+    else if (memcmp(&address, &broadcastMac2, 6) == 0)
         ret = true;
     return ret;
 }
