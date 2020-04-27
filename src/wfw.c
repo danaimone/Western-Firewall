@@ -309,7 +309,7 @@ static void sendTap(int tapDevice, int uc, void *buffer, struct sockaddr_in bcad
     } else {
         frame              *tempBuf = buffer;
         struct sockaddr_in *out     = &bcaddress;
-        if (hthaskey(*knownAddresses, tempBuf->destMac, MACSIZE) && !checkIfBroadcast(tempBuf->destMac)) {
+        if (hthaskey(*knownAddresses, tempBuf->destMac, MACSIZE) && !isBroadcast(tempBuf->destMac)) {
             out = htfind(*knownAddresses, tempBuf->destMac, MACSIZE);
         }
         if (-1 == sendto(uc, buffer, rdct, 0, (struct sockaddr *) out, sizeof(*out))) {
@@ -349,7 +349,7 @@ static void receiveBroadcast(int tapDevice, int bc, void *buffer, hashtable *kno
             if (!htinsert(*knownAddresses, key, MACSIZE, receiveSocket)) {
                 free(key);
                 free(receiveSocket);
-                perror("htinsert receiveBroadcast")
+                perror("htinsert receiveBroadcast");
             }
         } else { // updating the socket in case the port changes
             void *value;
