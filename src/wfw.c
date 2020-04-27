@@ -34,12 +34,13 @@
 static char          *conffile    = STR(SYSCONFDIR) "/wfw.cfg";
 static bool          printusage   = false;
 static unsigned char broadcastMac = 0x33;
+unsigned long broadcastMac2 = 0xffffffffffff;
 
 /* Structs */
 typedef struct EthernetFrame {
     char destMac[MACSIZE];
     char srcMac[MACSIZE];
-    char type[2]; // TODO: change to short
+    short type;
     char payload[1500];
 }                    frame;
 
@@ -368,7 +369,6 @@ static void freeKeys(void *key, void *value) {
  * address and check that as well.
  */
 static bool isBroadcast(char *address) {
-    unsigned long broadcastMac2 = 0xffffffffffff;
 
     bool ret;
     if (memcmp(&address[0], &broadcastMac, 1) == 0 && memcmp(&address[1], &broadcastMac, 1) == 0)
