@@ -93,6 +93,40 @@ START_TEST (test_one_start) {
 }
 END_TEST
 
+START_TEST (test_remove) {
+  FILE*     f  = fopen("/usr/share/dict/words", "r");
+  hashtable ht = htnew(0, (keycomp)strcmp, freeword);
+
+  char* word = getword(f);
+  while(word != NULL) {
+    ck_assert(htinsert(ht, word, strlen(word), word));
+    word = getword(f);
+  }
+
+  f = freopen("/usr/share/dict/words", "r", f);
+  word = getword(f);
+  while(word != NULL) {
+    htstrremove(ht, word);
+    ck_assert(NULL == htstrfind(ht, word));
+    word = getword(f);    
+  }
+
+  size_t size = *(size_t*)(ht);
+  f = freopen("/usr/share/dict/words", "r", f);
+  word = getword(f);    
+  while(word != NULL) {
+    ck_assert(htinsert(ht, word, strlen(word), word));
+    word = getword(f);    
+  }
+
+  ck_assert(size == *(size_t*)(ht));
+
+  fclose(f);
+  htfree(ht);
+}
+END_TEST
+
+
 START_TEST (test_zero_find) {
   hashtable ht = htnew(0, (keycomp)strcmp, NULL);
   
@@ -113,6 +147,7 @@ Suite* htsuite() {
     tcase_add_test(t, test_dictionary);
     tcase_add_test(t, test_one_start);
     tcase_add_test(t, test_zero_find);
+    tcase_add_test(t, test_remove);
     suite_add_tcase(s, t);
   }
   
@@ -125,6 +160,7 @@ int main() {
   Suite*   s = htsuite();
 
   SRunner* r = srunner_create(s);
+  srunner_set_fork_status(r, CK_NOFORK);
   srunner_run_all(r, CK_NORMAL);
   size_t failed = srunner_ntests_failed(r);
   srunner_free(r);

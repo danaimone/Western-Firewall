@@ -23,6 +23,7 @@ struct ht_st {
 
 /* Constants */
 #define MINSIZE 32
+#define EMPTY   ((size_t)(-1))
 
 
 /* Create a new hashtable
@@ -163,6 +164,7 @@ bool htstrinsert(hashtable ht, char* key, void* value) {
   return htinsert(ht, key, strlen(key), value);
 }
 
+
 /* Find the bucket's index
  *
  * This is used by htfind and hthaskey.  This is the interesting work of finding
@@ -175,8 +177,9 @@ size_t htbucket(hashtable ht, void* key, size_t keysz) {
   if(ht->size > 0) {
     i = htcrc32(key, keysz) % ht->size;
 
-    while(ht->table[i].key != NULL &&
-          0 != ht->comp(ht->table[i].key, key)) {
+    while((   ht->table[i].key != NULL
+           && 0 != ht->comp(ht->table[i].key, key))
+          || ht->table[i].keysz == EMPTY) {
       i = (i + 1) % ht->size;
     }
   }
@@ -185,6 +188,25 @@ size_t htbucket(hashtable ht, void* key, size_t keysz) {
            ? i
            : ht->size );
 }
+
+/* Remove a key and its associated value
+ *
+ */
+void htremove(hashtable ht, void* key, size_t keysz) {
+  assert(ht != NULL && key != NULL);
+  size_t i = htbucket(ht, key, keysz);
+  if(i < ht->size) {
+    ht->kvfree(ht->table[i].key, ht->table[i].value);
+    ht->table[i].key   = NULL;
+    ht->table[i].value = NULL;
+    ht->table[i].keysz = EMPTY;
+    ht->load--;
+  }
+}
+void htstrremove(hashtable ht, char* key){
+  htremove(ht, key, strlen(key));
+}
+
 
 /* Find
  *
