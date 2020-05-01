@@ -27,21 +27,22 @@
 #define BROADCAST "broadcast"
 #define ANYIF     "0.0.0.0"
 #define ANYPORT   "0"
-#define MACSIZE 6
-
+#define MACSIZE   6
+#define PID       "pidfile"
 
 /* Globals  */
-static char          *conffile    = STR(SYSCONFDIR) "/wfw.cfg";
-static bool          printusage   = false;
-static unsigned char broadcastMac = 0x33;
-unsigned long broadcastMac2 = 0xffffffffffff;
+static char          *conffile     = STR(SYSCONFDIR) "/wfw.cfg";
+static bool          printUsage    = false;
+static unsigned char broadcastMac  = 0x33;
+static bool          foreground    = false;
+unsigned long        broadcastMac2 = 0xffffffffffff;
 
 /* Structs */
 typedef struct EthernetFrame {
-    char destMac[MACSIZE];
-    char srcMac[MACSIZE];
+    char  destMac[MACSIZE];
+    char  srcMac[MACSIZE];
     short type;
-    char payload[1500];
+    char  payload[1500];
 }                    frame;
 
 /* Helper Functions */
@@ -132,6 +133,13 @@ int mkfdset(fd_set *set, ...);
 static
 void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr);
 
+/* Daemonize
+ * 
+ * Make this process a background, daemon process.
+ */
+static
+void daemonize(hashtable conf);
+
 /* Main
  * 
  * Mostly, main parses the command line, the conf file, creates the necessary
@@ -143,7 +151,7 @@ int main(int argc, char *argv[]) {
     if (!parseoptions(argc, argv)) {
         usage(argv[0], stderr);
         result = EXIT_FAILURE;
-    } else if (printusage) {
+    } else if (printUsage) {
         usage(argv[0], stdout);
     } else {
         hashtable conf   = readconf(conffile);
@@ -155,6 +163,8 @@ int main(int argc, char *argv[]) {
                   bcaddr = makesockaddr(htstrfind(conf, BROADCAST),
                                         htstrfind(conf, PORT));
 
+        if (!foreground)
+            daemonize(conf);
         bridge(tap, in, out, bcaddr);
 
         close(in);
@@ -173,9 +183,9 @@ int main(int argc, char *argv[]) {
  */
 static
 bool parseoptions(int argc, char *argv[]) {
-    static const char *OPTS = "hc:";
+    static const char *OPTS  = "hc:f";
 
-    bool parsed = true;
+    bool              parsed = true;
 
     char c = getopt(argc, argv, OPTS);
     while (c != -1) {
@@ -185,7 +195,11 @@ bool parseoptions(int argc, char *argv[]) {
                 break;
 
             case 'h':
-                printusage = true;
+                printUsage = true;
+                break;
+
+            case 'f':
+                foreground = true;
                 break;
 
             case '?':
@@ -287,14 +301,14 @@ int mkfdset(fd_set *set, ...) {
 
     va_list ap;
     va_start(ap, set);
-    int s   = va_arg(ap,
-    int);
+    int s = va_arg(ap,
+                   int);
     while (s != 0) {
         if (s > max)
             max = s;
         FD_SET(s, set);
         s = va_arg(ap,
-        int);
+                   int);
     }
     va_end(ap);
 
@@ -414,5 +428,16 @@ void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr) {
 
         maxfd = mkfdset(&rdset, tap, bc, uc, 0);
     }
+}
 
+static
+void daemonize(hashtable conf) {
+    daemon(0, 0);
+    if (hthasstrkey(conf, PID)) {
+        FILE *pidfile = fopen(htstrfind(conf, "pidfile"), "w");
+        if (pidfile != NULL) {
+            fprintf(pidfile, "%d\n", getpid());
+            fclose(pidfile);
+        }
+    }
 }
