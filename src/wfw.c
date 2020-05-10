@@ -33,9 +33,7 @@
 /* Globals  */
 static char          *conffile     = STR(SYSCONFDIR) "/wfw.cfg";
 static bool          printUsage    = false;
-static unsigned char broadcastMac  = 0x33;
 static bool          foreground    = false;
-unsigned long        broadcastMac2 = 0xffffffffffff;
 
 /* Structs */
 typedef struct EthernetFrame {
