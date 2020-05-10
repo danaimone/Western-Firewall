@@ -31,29 +31,26 @@
 #define PID       "pidfile"
 
 /* Globals  */
-static char *conffile = STR(SYSCONFDIR) "/wfw.cfg";
-static bool printUsage = false;
-static unsigned char broadcastMac = 0x33;
-static bool foreground = false;
-unsigned long broadcastMac2 = 0xffffffffffff;
+static char          *conffile     = STR(SYSCONFDIR) "/wfw.cfg";
+static bool          printUsage    = false;
+static unsigned char broadcastMac  = 0x33;
+static bool          foreground    = false;
+unsigned long        broadcastMac2 = 0xffffffffffff;
 
 /* Structs */
 typedef struct EthernetFrame {
-    char destMac[MACSIZE];
-    char srcMac[MACSIZE];
+    char  destMac[MACSIZE];
+    char  srcMac[MACSIZE];
     short type;
-    char payload[1500];
-} frame;
+    char  payload[1500];
+}                    frame;
 
 /* Helper Functions */
 static void
-sendTap(int tapDevice, int uc, void *buffer, struct sockaddr_in bcaddress,
+sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
         hashtable *knownAddresses);
 
-static void receiveUnicast(int tapDevice, int uc, void *buffer);
-
-static void receiveBroadcast(int tapDevice, int bc, void *buffer,
-                             hashtable *knownAddresses);
+static void receiveBCorUC(int tapDevice, int bc, hashtable *knownAddresses);
 
 static int macCmp(void *s1, void *s2);
 
@@ -157,14 +154,14 @@ int main(int argc, char *argv[]) {
     } else if (printUsage) {
         usage(argv[0], stdout);
     } else {
-        hashtable conf = readconf(conffile);
-        int tap = ensuretap(htstrfind(conf, DEVICE));
-        int out = ensuresocket(ANYIF, ANYPORT);
-        int in = ensuresocket(htstrfind(conf, BROADCAST),
-                              htstrfind(conf, PORT));
+        hashtable conf   = readconf(conffile);
+        int       tap    = ensuretap(htstrfind(conf, DEVICE));
+        int       out    = ensuresocket(ANYIF, ANYPORT);
+        int       in     = ensuresocket(htstrfind(conf, BROADCAST),
+                                        htstrfind(conf, PORT));
         struct sockaddr_in
-                bcaddr = makesockaddr(htstrfind(conf, BROADCAST),
-                                      htstrfind(conf, PORT));
+                  bcaddr = makesockaddr(htstrfind(conf, BROADCAST),
+                                        htstrfind(conf, PORT));
 
         if (!foreground)
             daemonize(conf);
@@ -186,9 +183,9 @@ int main(int argc, char *argv[]) {
  */
 static
 bool parseoptions(int argc, char *argv[]) {
-    static const char *OPTS = "hc:f";
+    static const char *OPTS  = "hc:f";
 
-    bool parsed = true;
+    bool              parsed = true;
 
     char c = getopt(argc, argv, OPTS);
     while (c != -1) {
@@ -284,9 +281,9 @@ static
 struct sockaddr_in makesockaddr(char *address, char *port) {
     struct sockaddr_in addr;
     bzero(&addr, sizeof(addr));
-    addr.sin_len = sizeof(addr);
+    addr.sin_len    = sizeof(addr);
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(atoi(port));
+    addr.sin_port   = htons(atoi(port));
     inet_pton(AF_INET, address, &(addr.sin_addr));
 
     return addr;
@@ -320,69 +317,64 @@ int mkfdset(fd_set *set, ...) {
 
 
 static void
-sendTap(int tapDevice, int uc, void *buffer, struct sockaddr_in bcaddress,
+sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
         hashtable *knownAddresses) {
-    ssize_t rdct = read(tapDevice, buffer, sizeof(frame));
+    frame   buffer;
+    ssize_t rdct = read(tapDevice, &buffer, sizeof(frame));
     if (rdct < 0) {
         perror("read");
     } else {
-        frame *tempBuf = buffer;
         struct sockaddr_in *out = &bcaddress;
-        if (hthaskey(*knownAddresses, tempBuf->destMac, MACSIZE) &&
-            !isBroadcast(tempBuf->destMac)) {
-            out = htfind(*knownAddresses, tempBuf->destMac, MACSIZE);
+        if (hthaskey(*knownAddresses, buffer.destMac, MACSIZE)) {
+            out = htfind(*knownAddresses, buffer.destMac, MACSIZE);
         }
-        if (-1 == sendto(uc, buffer, rdct, 0, (struct sockaddr *) out,
+        if (-1 == sendto(uc, &buffer, rdct, 0, (struct sockaddr *) out,
                          sizeof(*out))) {
             perror("sendto");
         }
     }
 }
 
-static void receiveUnicast(int tapDevice, int uc, void *buffer) {
-    struct sockaddr_in receive;
-    socklen_t receiveLength = sizeof(receive);
-    ssize_t rdct = recvfrom(uc, buffer, sizeof(frame), 0,
-                            (struct sockaddr *) &receive,
-                            &receiveLength);
+static void
+receiveBCorUC(int tapDevice, int bc, hashtable *knownAddresses) {
+    frame              buffer;
 
-    if (rdct < 0) {
-        perror("recvfrom receiveUnicast");
-    } else if (-1 == write(tapDevice, buffer, rdct)) {
-        perror("write receiveUnicast");
-    }
-}
-
-static void receiveBroadcast(int tapDevice, int bc, void *buffer,
-                             hashtable *knownAddresses) {
     struct sockaddr_in receive;
-    socklen_t receiveLength = sizeof(receive);
-    ssize_t rdct = recvfrom(bc, buffer, sizeof(frame), 0,
-                            (struct sockaddr *) &receive,
-                            &receiveLength);
+    socklen_t          receiveLength = sizeof(receive);
+
+    ssize_t            rdct          = recvfrom(bc, &buffer, sizeof(frame), 0,
+                                                (struct sockaddr *) &receive,
+                                                &receiveLength);
 
     if (rdct < 0) {
         perror("recvfrom receiveBroadcast");
     } else {
-        frame *tempBuffer = buffer;
-        if (!hthaskey(*knownAddresses, tempBuffer->srcMac, MACSIZE)) {
-            char *key = malloc(MACSIZE);
-            memcpy(key, tempBuffer->srcMac, MACSIZE);
-            struct sockaddr_in *receiveSocket = malloc(
-                    sizeof(struct sockaddr_in));
-            memcpy(receiveSocket, &receive, sizeof(struct sockaddr_in));
-            if (!htinsert(*knownAddresses, key, MACSIZE, receiveSocket)) {
-                free(key);
-                free(receiveSocket);
-                perror("htinsert receiveBroadcast");
+
+        if(!isBroadcast(buffer.destMac)) {
+            if (!hthaskey(*knownAddresses, buffer.srcMac, MACSIZE)) {
+
+                char *key = malloc(MACSIZE);
+                memcpy(key, buffer.srcMac, MACSIZE);
+
+                struct sockaddr_in *receiveSocket = malloc(
+                        sizeof(struct sockaddr_in));
+                memcpy(receiveSocket, &receive, sizeof(struct sockaddr_in));
+
+                if (!htinsert(*knownAddresses, key, MACSIZE, receiveSocket)) {
+                    free(key);
+                    free(receiveSocket);
+                    perror("htinsert receiveBroadcast");
+                }
             }
-        } else { // updating the socket in case the port changes
-            void *value;
-            value = htfind(*knownAddresses, tempBuffer->srcMac, MACSIZE);
-            memcpy(value, &receive, sizeof(struct sockaddr_in));
-        }
-        if (-1 == write(tapDevice, buffer, rdct)) {
-            perror("write receiveBroadcast");
+            else {
+                void *value;
+                value = htfind(*knownAddresses, buffer.srcMac, MACSIZE);
+                memcpy(value, &receive, sizeof(struct sockaddr_in));
+            }
+
+            if (-1 == write(tapDevice, &buffer, rdct)) {
+                perror("write receiveBroadcast");
+            }
         }
     }
 }
@@ -418,20 +410,20 @@ static
 void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr) {
     fd_set rdset;
 
-    int maxfd = mkfdset(&rdset, tap, bc, uc, 0);
-    frame buffer;
+    int       maxfd          = mkfdset(&rdset, tap, bc, uc, 0);
     hashtable knownAddresses = htnew(32, macCmp, freeKeys);
 
     while (0 <= select(1 + maxfd, &rdset, NULL, NULL,
-            NULL)) {
+                       NULL)) {
+
         if (FD_ISSET(tap, &rdset)) {
-            sendTap(tap, uc, &buffer, bcaddr, &knownAddresses);
+            sendTap(tap, uc, bcaddr, &knownAddresses);
         }
         else if (FD_ISSET(uc, &rdset)) {
-            receiveUnicast(tap, uc, &buffer);
+            receiveBCorUC(tap, uc, &knownAddresses);
         }
         else if (FD_ISSET(bc, &rdset)) {
-            receiveBroadcast(tap, bc, &buffer, &knownAddresses);
+            receiveBCorUC(tap, bc, &knownAddresses);
         }
 
         maxfd = mkfdset(&rdset, tap, bc, uc, 0);
@@ -443,7 +435,7 @@ void daemonize(hashtable conf) {
     daemon(0, 0);
     if (hthasstrkey(conf, PID)) {
         FILE *pidfile = fopen(htstrfind(conf, "pidfile"),
-                "w");
+                              "w");
         if (pidfile != NULL) {
             fprintf(pidfile, "%d\n", getpid());
             fclose(pidfile);
