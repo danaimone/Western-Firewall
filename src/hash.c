@@ -23,6 +23,7 @@ struct ht_st {
 
 /* Constants */
 #define MINSIZE 32
+#define EMPTY   ((size_t)(-1))
 
 
 /* Create a new hashtable
@@ -145,7 +146,7 @@ bool htinsert(hashtable ht, void* key, size_t keysz, void* value) {
   assert(ht != NULL && key != NULL);
 
   size_t oldload = ht->load;
-  if(ht->load < ht->size * 0.66 || htgrow(ht)) {
+  if((ht->load + 1) < ht->size * 0.66 || htgrow(ht)) {
 
     size_t i = htcrc32(key, keysz) % ht->size;
     while(ht->table[i].key != NULL)
@@ -157,11 +158,12 @@ bool htinsert(hashtable ht, void* key, size_t keysz, void* value) {
     ht->load ++;
   }
   
-  return ht->load > oldload;;  
+  return ht->load > oldload;
 }
 bool htstrinsert(hashtable ht, char* key, void* value) {
   return htinsert(ht, key, strlen(key), value);
 }
+
 
 /* Find the bucket's index
  *
@@ -170,18 +172,41 @@ bool htstrinsert(hashtable ht, char* key, void* value) {
  */
 static
 size_t htbucket(hashtable ht, void* key, size_t keysz) {
-  
-  size_t i = htcrc32(key, keysz) % ht->size;
 
-  while(ht->table[i].key != NULL &&
-        0 != ht->comp(ht->table[i].key, key)) {
-    i = (i + 1) % ht->size;
+  size_t i = 0;
+  if(ht->size > 0) {
+    i = htcrc32(key, keysz) % ht->size;
+
+    while((   ht->table[i].key != NULL
+           && 0 != ht->comp(ht->table[i].key, key))
+          || ht->table[i].keysz == EMPTY) {
+      i = (i + 1) % ht->size;
+    }
   }
   
-  return ( ht->table[i].key != NULL
+  return ( ht->table != NULL && ht->table[i].key != NULL
            ? i
            : ht->size );
 }
+
+/* Remove a key and its associated value
+ *
+ */
+void htremove(hashtable ht, void* key, size_t keysz) {
+  assert(ht != NULL && key != NULL);
+  size_t i = htbucket(ht, key, keysz);
+  if(i < ht->size) {
+    ht->kvfree(ht->table[i].key, ht->table[i].value);
+    ht->table[i].key   = NULL;
+    ht->table[i].value = NULL;
+    ht->table[i].keysz = EMPTY;
+    ht->load--;
+  }
+}
+void htstrremove(hashtable ht, char* key){
+  htremove(ht, key, strlen(key));
+}
+
 
 /* Find
  *

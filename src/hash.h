@@ -38,6 +38,13 @@ void htfree(hashtable ht);
 bool htinsert(hashtable ht, void* key, size_t keysz, void* value);
 bool htstrinsert(hashtable ht, char* key, void* value);
 
+/* Remove a key and its associated value
+ *
+ */
+void htremove(hashtable ht, void* key, size_t keysz);
+void htstrremove(hashtable ht, char* key);
+
+
 /* Find a key
  * returns the value associated with the specified key or NULL if the key is not
  * in the hash table
