@@ -91,7 +91,7 @@ typedef struct Segment {
     uint16_t window;
     uint16_t checkSum;
     uint16_t urgent;
-    uint32_t options[];
+    uint32_t *options;
 } tcpSegment;
 // @formatter:on
 
@@ -101,7 +101,7 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
         hashtable *knownAddresses, hashtable *knownCookies);
 
 static void
-receiveBCorUC(int tapDevice, int bc, hashtable *knownAddresses,
+receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
               hashtable *knownCookies);
 
 static int
@@ -115,9 +115,6 @@ freeKeys(void *key, void *val);
 
 static bool
 isBroadcast(unsigned char *address);
-
-static bool
-isIPV6(unsigned short *type);
 
 static bool
 isTCPSegment(uint32_t nextHeader);
@@ -394,8 +391,9 @@ static void
 sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
         hashtable *knownAddresses, hashtable *knownCookies) {
     frame    buffer;
-    header_t *header;
-    ssize_t  rdct = read(tapDevice, &buffer, sizeof(frame));
+    header_t h;
+    header_t *header = &h;
+    ssize_t  rdct    = read(tapDevice, &buffer, sizeof(frame));
 
 
     if (rdct < 0) {
@@ -406,9 +404,8 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
             out = htfind(*knownAddresses, buffer.destMac, MACSIZE);
         }
 
-        if (isIPV6(&buffer.type)) {
+        if (htons(buffer.type) == 0x86DD) {
             header = (header_t *) (&buffer)->payload;
-
             if (isTCPSegment(header->nextHeader)) {
                 tcpSegment *segment = (tcpSegment *) header->payload;
 
@@ -417,11 +414,8 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
                                                              segment->destPort,
                                                              header->destAddr);
 
-                    if (!htinsert(*knownCookies, allowedConnection,
-                                  sizeof(cookie), NULL)) {
-                        free(allowedConnection);
-                        perror("htinsert sendTap");
-                    }
+                    htinsert(*knownCookies, allowedConnection,
+                             sizeof(cookie), 0);
                 }
             }
         }
@@ -441,37 +435,38 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
  * a TCP segment that is a trusted connection, it is blocked.
  */
 static void
-receiveBCorUC(int tapDevice, int bc, hashtable *knownAddresses,
+receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
               hashtable *knownCookies) {
     frame              buffer;
-    header_t           *header;
-    cookie             *connection;
+    header_t           h;
+    header_t           *header       = &h;
+    cookie             c;
+    cookie             *connection   = &c;
     struct sockaddr_in receive;
     socklen_t          receiveLength = sizeof(receive);
 
-    ssize_t rdct = recvfrom(bc, &buffer, sizeof(frame), 0,
+    ssize_t rdct = recvfrom(bcOrUC, &buffer, sizeof(frame), 0,
                             (struct sockaddr *) &receive,
                             &receiveLength);
-
-    if (isIPV6(&buffer.type)) {
-
-        header = (header_t *) (&buffer)->payload;
-
-        if (isTCPSegment(header->nextHeader)) {
-            tcpSegment *segment = (tcpSegment *) header->payload;
-
-            if (segment->SYN != 0) {
-                connection = createCookie(segment->destPort,
-                                          segment->srcPort,
-                                          header->destAddr);
-            }
-        }
-    }
 
     if (rdct < 0) {
         perror("recvfrom receiveBroadcast");
     } else {
-        if (hthaskey(*knownCookies, connection, sizeof(cookie))) {
+        bool allowed;
+        if (htons(buffer.type) == 0x86DD) {
+            header = (header_t *) (&buffer)->payload;
+
+            if (isTCPSegment(header->nextHeader)) {
+                tcpSegment *segment = (tcpSegment *) header->payload;
+
+                connection = createCookie(segment->destPort,
+                                          segment->srcPort,
+                                          header->sourceAddr);
+                allowed = hthaskey(*knownCookies, connection, sizeof(cookie));
+            }
+        }
+
+        if (allowed) {
             if (!isBroadcast(buffer.destMac)) {
                 if (!hthaskey(*knownAddresses, buffer.srcMac, MACSIZE)) {
 
@@ -580,7 +575,7 @@ cookie *createCookie(uint16_t segSrcPort,
     cookie *connectionCookie = malloc(sizeof(cookie));
     memcpy(&(connectionCookie)->localPort, &segSrcPort, sizeof(uint16_t));
     memcpy(&(connectionCookie)->remotePort, &segDestPort, sizeof(uint16_t));
-    memcpy(connectionCookie->remoteAddress, destAddr,
+    memcpy(&(connectionCookie)->remoteAddress, &destAddr,
            sizeof(unsigned char[16]));
     return connectionCookie;
 }
@@ -596,7 +591,7 @@ void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr) {
     int maxfd = mkfdset(&rdset, tap, bc, uc, 0);
 
     hashtable knownAddresses = htnew(32, macCmp, freeKeys);
-    hashtable knownCookies   = htnew(sizeof(cookie), cookieCmp, freeKeys);
+    hashtable knownCookies   = htnew(32, cookieCmp, freeKeys);
 
     while (0 <= select(1 + maxfd, &rdset, NULL, NULL, NULL)) {
 
@@ -612,6 +607,13 @@ void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr) {
     }
 }
 
+/* createCookie
+ *
+ * Generates a pointer to a cookie struct.
+ * Note that the segSrcPort and segDestPort relies on interpreting the client
+ * server relationship.
+ * Please free the cookie if you are not inserting it into a hashtable.
+ */
 static
 void daemonize(hashtable conf) {
     daemon(0, 0);
