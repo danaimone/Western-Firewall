@@ -289,7 +289,6 @@ bool parseoptions(int argc, char *argv[]) {
 /* Print Usage Statement
  *
  */
-
 static
 void usage(char *cmd, FILE *file) {
     fprintf(file, "Usage: %s -c file.cfg [-h]\n", cmd);
@@ -384,6 +383,13 @@ int mkfdset(fd_set *set, ...) {
 }
 
 
+/*
+ * sendTap
+ *
+ * Sends packets out from the tap device. If the packet is an ipv6 packet with
+ * a TCP segment and a set SYN bit, the connection request is inserted into a
+ * hashtable for use in receiveBCorUC.
+ */
 static void
 sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
         hashtable *knownAddresses, hashtable *knownCookies) {
@@ -427,6 +433,13 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
     }
 }
 
+/*
+ * receiveBCorUC
+ *
+ * Listens on the tap device for incoming packets that are either directly
+ * addressed (uc) or broadcasted (bc). If the packet is not an ipV6 packet and
+ * a TCP segment that is a trusted connection, it is blocked.
+ */
 static void
 receiveBCorUC(int tapDevice, int bc, hashtable *knownAddresses,
               hashtable *knownCookies) {
@@ -498,14 +511,13 @@ int macCmp(void *s1, void *s2) {
     return memcmp(s1, s2, MACSIZE);
 }
 
+/*
+ * Helper function to compare two values for cookie hashtable creation
+ */
 static
 int cookieCmp(void *s1, void *s2) {
     return memcmp(s1, s2, sizeof(cookie));
 }
-
-/*
- * Helper function to compare two values for cookie hashtable creation
- */
 
 /*
  * Helper void pointer function to free the key value pair of the hashtable
@@ -542,15 +554,25 @@ bool isBroadcast(unsigned char *address) {
 static
 bool isIPV6(unsigned short *type) {
     static const char ipv6Type[]  = {0x86, 0xDD};
-    short             typeNetwork = htons((uint16_t) type);
+    unsigned short    typeNetwork = htons(type);
     return (memcmp(&typeNetwork, ipv6Type, 2) == 0);
 }
 
+/* isTCPSegment
+ *
+ * Returns true if an IPV6 packet contains a tcp segment, otherwise false
+ */
 static
 bool isTCPSegment(uint32_t nextHeader) {
     return (nextHeader == 6);
 }
 
+/* createCookie
+ *
+ * Generates a pointer to a cookie struct.
+ * Note that the segSrcPort and segDestPort relies on interpreting the client
+ * server relationship
+ */
 static
 cookie *createCookie(uint16_t segSrcPort,
                      uint16_t segDestPort,
