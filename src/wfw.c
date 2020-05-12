@@ -31,31 +31,101 @@
 #define PID       "pidfile"
 
 /* Globals  */
-static char          *conffile     = STR(SYSCONFDIR) "/wfw.cfg";
-static bool          printUsage    = false;
-static bool          foreground    = false;
+static char *confFile  = STR(SYSCONFDIR) "/wfw.cfg";
+static bool printUsage = false;
+static bool foreground = false;
 
 /* Structs */
 typedef struct EthernetFrame {
-    char  destMac[MACSIZE];
-    char  srcMac[MACSIZE];
-    short type;
-    char  payload[1500];
-}                    frame;
+    unsigned char  destMac[MACSIZE];
+    unsigned char  srcMac[MACSIZE];
+    unsigned short type;
+    unsigned char  payload[1500];
+}           frame;
+
+// @formatter:off
+typedef struct Headerv6 {
+    uint32_t version    : 4;
+    uint32_t class      : 8;
+    uint32_t flowLabel  : 20;
+
+    uint32_t plen       : 16;
+    uint32_t nextHeader : 8;
+    uint32_t hop        : 8;
+
+    unsigned char sourceAddr[16];
+    unsigned char destAddr[16];
+
+    uint8_t payload[];
+
+} header_t;
+// @formatter:on
+
+/*
+ * This struct represents allowed connections
+ */
+typedef struct ConnectionKey {
+    uint16_t localPort;
+    uint16_t remotePort;
+
+    unsigned char remoteAddress[16];
+} cookie;
+
+// @formatter:off
+typedef struct Segment {
+    uint16_t srcPort;
+    uint16_t destPort;
+    uint32_t sequenceNum;
+    uint32_t ackNum;
+
+    uint16_t            : 4;
+    uint16_t headerSize : 4;
+    uint16_t FIN        : 1;
+    uint16_t SYN        : 1;
+    uint16_t RST        : 1;
+    uint16_t PSH        : 1;
+    uint16_t ACK        : 1;
+    uint16_t URG        : 1;
+    uint16_t            : 2;
+
+    uint16_t window;
+    uint16_t checkSum;
+    uint16_t urgent;
+    uint32_t options[];
+} tcpSegment;
+// @formatter:on
 
 /* Helper Functions */
 static void
 sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
-        hashtable *knownAddresses);
+        hashtable *knownAddresses, hashtable *knownCookies);
 
-static void receiveBCorUC(int tapDevice, int bc, hashtable *knownAddresses);
+static void
+receiveBCorUC(int tapDevice, int bc, hashtable *knownAddresses,
+              hashtable *knownCookies);
 
-static int macCmp(void *s1, void *s2);
+static int
+macCmp(void *s1, void *s2);
 
-static void freeKeys(void *key, void *val);
+static int
+cookieCmp(void *s1, void *s2);
 
-static bool isBroadcast(char *address);
+static void
+freeKeys(void *key, void *val);
 
+static bool
+isBroadcast(unsigned char *address);
+
+static bool
+isIPV6(unsigned short *type);
+
+static bool
+isTCPSegment(uint32_t nextHeader);
+
+static cookie *
+createCookie(uint16_t segSrcPort,
+             uint16_t segDestPort,
+             unsigned char destAddr[16]);
 
 /* Prototypes */
 
@@ -152,7 +222,7 @@ int main(int argc, char *argv[]) {
     } else if (printUsage) {
         usage(argv[0], stdout);
     } else {
-        hashtable conf   = readconf(conffile);
+        hashtable conf   = readconf(confFile);
         int       tap    = ensuretap(htstrfind(conf, DEVICE));
         int       out    = ensuresocket(ANYIF, ANYPORT);
         int       in     = ensuresocket(htstrfind(conf, BROADCAST),
@@ -189,7 +259,7 @@ bool parseoptions(int argc, char *argv[]) {
     while (c != -1) {
         switch (c) {
             case 'c':
-                conffile = optarg;
+                confFile = optarg;
                 break;
 
             case 'h':
@@ -316,9 +386,12 @@ int mkfdset(fd_set *set, ...) {
 
 static void
 sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
-        hashtable *knownAddresses) {
-    frame   buffer;
-    ssize_t rdct = read(tapDevice, &buffer, sizeof(frame));
+        hashtable *knownAddresses, hashtable *knownCookies) {
+    frame    buffer;
+    header_t *header;
+    ssize_t  rdct = read(tapDevice, &buffer, sizeof(frame));
+
+
     if (rdct < 0) {
         perror("read");
     } else {
@@ -326,6 +399,27 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
         if (hthaskey(*knownAddresses, buffer.destMac, MACSIZE)) {
             out = htfind(*knownAddresses, buffer.destMac, MACSIZE);
         }
+
+        if (isIPV6(&buffer.type)) {
+            header = (header_t *) (&buffer)->payload;
+
+            if (isTCPSegment(header->nextHeader)) {
+                tcpSegment *segment = (tcpSegment *) header->payload;
+
+                if (segment->SYN != 0) {
+                    cookie *allowedConnection = createCookie(segment->srcPort,
+                                                             segment->destPort,
+                                                             header->destAddr);
+
+                    if (!htinsert(*knownCookies, allowedConnection,
+                                  sizeof(cookie), NULL)) {
+                        free(allowedConnection);
+                        perror("htinsert sendTap");
+                    }
+                }
+            }
+        }
+
         if (-1 == sendto(uc, &buffer, rdct, 0, (struct sockaddr *) out,
                          sizeof(*out))) {
             perror("sendto");
@@ -334,54 +428,90 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
 }
 
 static void
-receiveBCorUC(int tapDevice, int bc, hashtable *knownAddresses) {
+receiveBCorUC(int tapDevice, int bc, hashtable *knownAddresses,
+              hashtable *knownCookies) {
     frame              buffer;
-
+    header_t           *header;
+    cookie             *connection;
     struct sockaddr_in receive;
     socklen_t          receiveLength = sizeof(receive);
 
-    ssize_t            rdct          = recvfrom(bc, &buffer, sizeof(frame), 0,
-                                                (struct sockaddr *) &receive,
-                                                &receiveLength);
+    ssize_t rdct = recvfrom(bc, &buffer, sizeof(frame), 0,
+                            (struct sockaddr *) &receive,
+                            &receiveLength);
+
+    if (isIPV6(&buffer.type)) {
+
+        header = (header_t *) (&buffer)->payload;
+
+        if (isTCPSegment(header->nextHeader)) {
+            tcpSegment *segment = (tcpSegment *) header->payload;
+
+            if (segment->SYN != 0) {
+                connection = createCookie(segment->destPort,
+                                          segment->srcPort,
+                                          header->destAddr);
+            }
+        }
+    }
 
     if (rdct < 0) {
         perror("recvfrom receiveBroadcast");
     } else {
+        if (hthaskey(*knownCookies, connection, sizeof(cookie))) {
+            if (!isBroadcast(buffer.destMac)) {
+                if (!hthaskey(*knownAddresses, buffer.srcMac, MACSIZE)) {
 
-        if(!isBroadcast(buffer.destMac)) {
-            if (!hthaskey(*knownAddresses, buffer.srcMac, MACSIZE)) {
+                    char *key = malloc(MACSIZE);
+                    memcpy(key, buffer.srcMac, MACSIZE);
 
-                char *key = malloc(MACSIZE);
-                memcpy(key, buffer.srcMac, MACSIZE);
+                    struct sockaddr_in *receiveSocket = malloc(
+                            sizeof(struct sockaddr_in));
+                    memcpy(receiveSocket, &receive,
+                           sizeof(struct sockaddr_in));
 
-                struct sockaddr_in *receiveSocket = malloc(
-                        sizeof(struct sockaddr_in));
-                memcpy(receiveSocket, &receive, sizeof(struct sockaddr_in));
-
-                if (!htinsert(*knownAddresses, key, MACSIZE, receiveSocket)) {
-                    free(key);
-                    free(receiveSocket);
-                    perror("htinsert receiveBroadcast");
+                    if (!htinsert(*knownAddresses, key, MACSIZE,
+                                  receiveSocket)) {
+                        free(key);
+                        free(receiveSocket);
+                        perror("htinsert receiveBroadcast");
+                    }
+                } else {
+                    void *value;
+                    value = htfind(*knownAddresses, buffer.srcMac, MACSIZE);
+                    memcpy(value, &receive, sizeof(struct sockaddr_in));
                 }
-            }
-            else {
-                void *value;
-                value = htfind(*knownAddresses, buffer.srcMac, MACSIZE);
-                memcpy(value, &receive, sizeof(struct sockaddr_in));
-            }
 
-            if (-1 == write(tapDevice, &buffer, rdct)) {
-                perror("write receiveBroadcast");
+                if (-1 == write(tapDevice, &buffer, rdct)) {
+                    perror("write receiveBroadcast");
+                }
             }
         }
     }
 }
 
-static int macCmp(void *s1, void *s2) {
+/*
+ * Helper function for comparing two values for hashtable creation
+ */
+static
+int macCmp(void *s1, void *s2) {
     return memcmp(s1, s2, MACSIZE);
 }
 
-static void freeKeys(void *key, void *value) {
+static
+int cookieCmp(void *s1, void *s2) {
+    return memcmp(s1, s2, sizeof(cookie));
+}
+
+/*
+ * Helper function to compare two values for cookie hashtable creation
+ */
+
+/*
+ * Helper void pointer function to free the key value pair of the hashtable
+ */
+static
+void freeKeys(void *key, void *value) {
     free(key);
     free(value);
 }
@@ -392,12 +522,45 @@ static void freeKeys(void *key, void *value) {
  * also set up an unsigned char array for the ff:ff:ff:ff:ff broadcast
  * address and check that as well.
  */
-static bool isBroadcast(char *address) {
+static
+bool isBroadcast(unsigned char *address) {
     static const char broadcastMac[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
     static const char multicastMac[] = {0x33, 0x33};
 
     return (memcmp(address, broadcastMac, 6) == 0 ||
             memcmp(address, multicastMac, 2) == 0);
+}
+
+/*
+ * isIPV6
+ *
+ * Given the type from a ethernet frame, this functions checks to see if
+ * it contains the 0x86DD segment that indicates the packet is IPV6.
+ *
+ * Note the use of htons, which ensures the endianess
+ */
+static
+bool isIPV6(unsigned short *type) {
+    static const char ipv6Type[]  = {0x86, 0xDD};
+    short             typeNetwork = htons((uint16_t) type);
+    return (memcmp(&typeNetwork, ipv6Type, 2) == 0);
+}
+
+static
+bool isTCPSegment(uint32_t nextHeader) {
+    return (nextHeader == 6);
+}
+
+static
+cookie *createCookie(uint16_t segSrcPort,
+                     uint16_t segDestPort,
+                     unsigned char destAddr[16]) {
+    cookie *connectionCookie = malloc(sizeof(cookie));
+    memcpy(&(connectionCookie)->localPort, &segSrcPort, sizeof(uint16_t));
+    memcpy(&(connectionCookie)->remotePort, &segDestPort, sizeof(uint16_t));
+    memcpy(connectionCookie->remoteAddress, destAddr,
+           sizeof(unsigned char[16]));
+    return connectionCookie;
 }
 
 /* Bridge
@@ -408,20 +571,19 @@ static
 void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr) {
     fd_set rdset;
 
-    int       maxfd          = mkfdset(&rdset, tap, bc, uc, 0);
-    hashtable knownAddresses = htnew(32, macCmp, freeKeys);
+    int maxfd = mkfdset(&rdset, tap, bc, uc, 0);
 
-    while (0 <= select(1 + maxfd, &rdset, NULL, NULL,
-                       NULL)) {
+    hashtable knownAddresses = htnew(32, macCmp, freeKeys);
+    hashtable knownCookies   = htnew(sizeof(cookie), cookieCmp, freeKeys);
+
+    while (0 <= select(1 + maxfd, &rdset, NULL, NULL, NULL)) {
 
         if (FD_ISSET(tap, &rdset)) {
-            sendTap(tap, uc, bcaddr, &knownAddresses);
-        }
-        else if (FD_ISSET(uc, &rdset)) {
-            receiveBCorUC(tap, uc, &knownAddresses);
-        }
-        else if (FD_ISSET(bc, &rdset)) {
-            receiveBCorUC(tap, bc, &knownAddresses);
+            sendTap(tap, uc, bcaddr, &knownAddresses, &knownCookies);
+        } else if (FD_ISSET(uc, &rdset)) {
+            receiveBCorUC(tap, uc, &knownAddresses, &knownCookies);
+        } else if (FD_ISSET(bc, &rdset)) {
+            receiveBCorUC(tap, bc, &knownAddresses, &knownCookies);
         }
 
         maxfd = mkfdset(&rdset, tap, bc, uc, 0);
