@@ -30,6 +30,7 @@
 #define MACSIZE   6
 #define PID       "pidfile"
 #define TCPSEG    6
+#define IPV6PACK  0x86dd
 
 
 /* Globals  */
@@ -403,17 +404,22 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
             out = htfind(*knownAddresses, buffer.destMac, MACSIZE);
         }
 
-        if (htons(buffer.type) == 0x86DD) {
+        if (htons(buffer.type) == IPV6PACK) {
             header = (header_t *) (&buffer)->payload;
             if (isTCPSegment(header->nextHeader)) {
                 tcpSegment *segment = (tcpSegment *) header->payload;
 
                 if (segment->SYN != 0) {
-                    connectionKey *allowedConnection = malloc(sizeof(connectionKey));
-                    memcpy(&(allowedConnection)->localPort, &segment->srcPort, sizeof(uint16_t));
-                    memcpy(&(allowedConnection)->remotePort, &segment->destPort, sizeof(uint16_t));
-                    memcpy(&(allowedConnection)->remoteAddress, &header->destAddr, 16);
-                    htinsert(*knownCookies, allowedConnection, sizeof(connectionKey), 0);
+                    connectionKey *allowedConnection = malloc(
+                            sizeof(connectionKey));
+                    memcpy(&allowedConnection->localPort, &segment->srcPort,
+                           sizeof(uint16_t));
+                    memcpy(&allowedConnection->remotePort, &segment->destPort,
+                           sizeof(uint16_t));
+                    memcpy(&allowedConnection->remoteAddress,
+                           &header->destAddr, 16);
+                    htinsert(*knownCookies, allowedConnection,
+                             sizeof(connectionKey), 0);
                 }
             }
         }
@@ -438,7 +444,7 @@ receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
               hashtable *knownCookies) {
     frame              buffer;
     struct sockaddr_in receive;
-    socklen_t          receiveLength = sizeof(receive);
+    socklen_t          receiveLength = sizeof(struct sockaddr_in);
 
     ssize_t rdct = recvfrom(bcOrUC, &buffer, sizeof(frame), 0,
                             (struct sockaddr *) &receive,
@@ -531,19 +537,26 @@ bool isTCPSegment(uint32_t nextHeader) {
 static bool
 isAllowedConnection(frame buffer, hashtable *knownCookies) {
     bool allowed;
-    if (htons(buffer.type) == 0x86DD) {
+    if (htons(buffer.type) == IPV6PACK) {
         header_t *header = (header_t *) (&buffer)->payload;
 
         if (isTCPSegment(header->nextHeader)) {
             connectionKey *connection = malloc(sizeof(connectionKey));
             tcpSegment    *segment    = (tcpSegment *) header->payload;
 
-            memcpy(&(connection)->localPort, &segment->destPort, sizeof(uint16_t));
-            memcpy(&(connection)->remotePort, &segment->srcPort, sizeof(uint16_t));
+            memcpy(&(connection)->localPort, &segment->destPort,
+                   sizeof(uint16_t));
+            memcpy(&(connection)->remotePort, &segment->srcPort,
+                   sizeof(uint16_t));
             memcpy(&(connection)->remoteAddress, &header->sourceAddr, 16);
-            allowed = hthaskey(*knownCookies, connection, sizeof(connectionKey));
+            allowed = hthaskey(*knownCookies, connection,
+                               sizeof(connectionKey));
             free(connection);
+        } else {
+            allowed = true;
         }
+    } else {
+        allowed = true;
     }
     return allowed;
 }
