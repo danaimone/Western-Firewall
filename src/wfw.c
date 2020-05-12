@@ -71,7 +71,7 @@ typedef struct ConnectionKey {
     uint16_t remotePort;
 
     unsigned char remoteAddress[16];
-} cookie;
+} connectionKey;
 
 // @formatter:off
 typedef struct Segment {
@@ -110,7 +110,7 @@ static int
 macCmp(void *s1, void *s2);
 
 static int
-cookieCmp(void *s1, void *s2);
+connectionCmp(void *s1, void *s2);
 
 static void
 freeKeys(void *key, void *val);
@@ -409,12 +409,11 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
                 tcpSegment *segment = (tcpSegment *) header->payload;
 
                 if (segment->SYN != 0) {
-                    printf("creating a cookie..\n");
-                    cookie *allowedConnection = malloc(sizeof(cookie));
+                    connectionKey *allowedConnection = malloc(sizeof(connectionKey));
                     memcpy(&(allowedConnection)->localPort, &segment->srcPort, sizeof(uint16_t));
                     memcpy(&(allowedConnection)->remotePort, &segment->destPort, sizeof(uint16_t));
                     memcpy(&(allowedConnection)->remoteAddress, &header->destAddr, 16);
-                    htinsert(*knownCookies, allowedConnection, sizeof(cookie), 0);
+                    htinsert(*knownCookies, allowedConnection, sizeof(connectionKey), 0);
                 }
             }
         }
@@ -492,8 +491,8 @@ int macCmp(void *s1, void *s2) {
  * Helper function to compare two values for cookie hashtable creation
  */
 static
-int cookieCmp(void *s1, void *s2) {
-    return memcmp(s1, s2, sizeof(cookie));
+int connectionCmp(void *s1, void *s2) {
+    return memcmp(s1, s2, sizeof(connectionKey));
 }
 
 /*
@@ -536,13 +535,13 @@ isAllowedConnection(frame buffer, hashtable *knownCookies) {
         header_t *header = (header_t *) (&buffer)->payload;
 
         if (isTCPSegment(header->nextHeader)) {
-            cookie *connection = malloc(sizeof(cookie));
-            tcpSegment *segment = (tcpSegment *) header->payload;
+            connectionKey *connection = malloc(sizeof(connectionKey));
+            tcpSegment    *segment    = (tcpSegment *) header->payload;
 
             memcpy(&(connection)->localPort, &segment->destPort, sizeof(uint16_t));
             memcpy(&(connection)->remotePort, &segment->srcPort, sizeof(uint16_t));
             memcpy(&(connection)->remoteAddress, &header->sourceAddr, 16);
-            allowed = hthaskey(*knownCookies, connection, sizeof(cookie));
+            allowed = hthaskey(*knownCookies, connection, sizeof(connectionKey));
             free(connection);
         }
     }
@@ -560,7 +559,7 @@ void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr) {
     int maxfd = mkfdset(&rdset, tap, bc, uc, 0);
 
     hashtable knownAddresses = htnew(32, macCmp, freeKeys);
-    hashtable knownCookies   = htnew(32, cookieCmp, freeKeys);
+    hashtable knownCookies   = htnew(32, connectionCmp, freeKeys);
 
     while (0 <= select(1 + maxfd, &rdset, NULL, NULL, NULL)) {
 
