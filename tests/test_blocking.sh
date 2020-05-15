@@ -2,11 +2,11 @@
 bold=$(tput bold)
 normal=$(tput sgr0)
 
-printf "${bold}Executing telnet for quote of the day.. ${normal}\n"
+printf "${bold}Executing telnet for time.. ${normal}\n"
 telnet fd10:2020:c5c1:367:e15f:7bc8:97a3:cf9d 13
 
 printf "\n"
-printf "${bold}Executing telnet for time...${normal}\n"
+printf "${bold}Executing telnet for quote of the day...${normal}\n"
 telnet fd10:2020:c5c1:367:e15f:7bc8:97a3:cf9d 17
 
 printf "\n"
