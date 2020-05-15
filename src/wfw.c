@@ -101,11 +101,11 @@ typedef struct Segment {
 /* Helper Functions */
 static void
 sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
-        hashtable *knownAddresses, hashtable *knownCookies);
+        hashtable *knownAddresses, hashtable *knownConnections);
 
 static void
 receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
-              hashtable *knownCookies);
+              hashtable *knownConnections);
 
 static int
 macCmp(void *s1, void *s2);
@@ -115,6 +115,11 @@ connectionCmp(void *s1, void *s2);
 
 static void
 freeKeys(void *key, void *val);
+
+
+static void
+insertAllowedConnection(hashtable *knownConnections, uint16_t *srcPort, uint16_t
+*destPort, unsigned char *destAddr);
 
 static bool
 isBroadcast(unsigned char *address);
@@ -389,7 +394,7 @@ int mkfdset(fd_set *set, ...) {
  */
 static void
 sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
-        hashtable *knownAddresses, hashtable *knownCookies) {
+        hashtable *knownAddresses, hashtable *knownConnections) {
     frame    buffer;
     header_t h;
     header_t *header = &h;
@@ -410,16 +415,10 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
                 tcpSegment *segment = (tcpSegment *) header->payload;
 
                 if (segment->SYN != 0) {
-                    connectionKey *allowedConnection = malloc(
-                            sizeof(connectionKey));
-                    memcpy(&allowedConnection->localPort, &segment->srcPort,
-                           sizeof(uint16_t));
-                    memcpy(&allowedConnection->remotePort, &segment->destPort,
-                           sizeof(uint16_t));
-                    memcpy(&allowedConnection->remoteAddress,
-                           &header->destAddr, 16);
-                    htinsert(*knownCookies, allowedConnection,
-                             sizeof(connectionKey), 0);
+                    insertAllowedConnection(knownConnections,
+                                            &segment->srcPort,
+                                            &segment->destPort,
+                                            &header->destAddr);
                 }
             }
         }
@@ -441,7 +440,7 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
  */
 static void
 receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
-              hashtable *knownCookies) {
+              hashtable *knownConnections) {
     frame              buffer;
     struct sockaddr_in receive;
     socklen_t          receiveLength = sizeof(struct sockaddr_in);
@@ -453,7 +452,7 @@ receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
     if (rdct < 0) {
         perror("recvfrom receiveBroadcast");
     } else {
-        if (isAllowedConnection(buffer, knownCookies)) {
+        if (isAllowedConnection(buffer, knownConnections)) {
             if (!isBroadcast(buffer.destMac)) {
                 if (!hthaskey(*knownAddresses, buffer.srcMac, MACSIZE)) {
 
@@ -494,11 +493,26 @@ int macCmp(void *s1, void *s2) {
 }
 
 /*
- * Helper function to compare two values for cookie hashtable creation
+ * Helper function to compare two values for allowedConnections hashtable
+ * creation
  */
 static
 int connectionCmp(void *s1, void *s2) {
     return memcmp(s1, s2, sizeof(connectionKey));
+}
+
+/*
+ * Helper function to insert an allowed connection key into hashtable from
+ * sendTap
+ */
+static void
+insertAllowedConnection(hashtable *knownConnections, uint16_t *srcPort, uint16_t
+*destPort, unsigned char *destAddr) {
+    connectionKey *allowedConnection = malloc(sizeof(connectionKey));
+    memcpy(&allowedConnection->localPort, srcPort, sizeof(uint16_t));
+    memcpy(&allowedConnection->remotePort, destPort, sizeof(uint16_t));
+    memcpy(&allowedConnection->remoteAddress, destAddr, 16);
+    htinsert(*knownConnections, allowedConnection, sizeof(connectionKey), 0);
 }
 
 /*
@@ -534,6 +548,13 @@ bool isTCPSegment(uint32_t nextHeader) {
     return (nextHeader == TCPSEG);
 }
 
+/* isAllowedConnection
+ *
+ * Helper function to check if a given frame is an allowed connection based
+ * on a hashtable check. Essentially, this function checks if the frame is
+ * IPv6 as well as checks if the nextHeader has a TCP segment. This function
+ * also returns true if it's an IPv4 packet or just a UDP segment.
+ */
 static bool
 isAllowedConnection(frame buffer, hashtable *knownCookies) {
     bool allowed;
@@ -551,10 +572,12 @@ isAllowedConnection(frame buffer, hashtable *knownCookies) {
             memcpy(&(connection)->remoteAddress, &header->sourceAddr, 16);
             allowed = hthaskey(*knownCookies, connection,
                                sizeof(connectionKey));
+
             free(connection);
         } else {
             allowed = true;
         }
+
     } else {
         allowed = true;
     }
@@ -571,17 +594,17 @@ void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr) {
 
     int maxfd = mkfdset(&rdset, tap, bc, uc, 0);
 
-    hashtable knownAddresses = htnew(32, macCmp, freeKeys);
-    hashtable knownCookies   = htnew(32, connectionCmp, freeKeys);
+    hashtable knownAddresses   = htnew(32, macCmp, freeKeys);
+    hashtable knownConnections = htnew(32, connectionCmp, freeKeys);
 
     while (0 <= select(1 + maxfd, &rdset, NULL, NULL, NULL)) {
 
         if (FD_ISSET(tap, &rdset)) {
-            sendTap(tap, uc, bcaddr, &knownAddresses, &knownCookies);
+            sendTap(tap, uc, bcaddr, &knownAddresses, &knownConnections);
         } else if (FD_ISSET(uc, &rdset)) {
-            receiveBCorUC(tap, uc, &knownAddresses, &knownCookies);
+            receiveBCorUC(tap, uc, &knownAddresses, &knownConnections);
         } else if (FD_ISSET(bc, &rdset)) {
-            receiveBCorUC(tap, bc, &knownAddresses, &knownCookies);
+            receiveBCorUC(tap, bc, &knownAddresses, &knownConnections);
         }
 
         maxfd = mkfdset(&rdset, tap, bc, uc, 0);
