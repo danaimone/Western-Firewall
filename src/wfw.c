@@ -96,6 +96,7 @@ typedef struct Segment {
     uint16_t urgent;
     uint32_t *options;
 } tcpSegment;
+
 // @formatter:on
 
 /* Helper Functions */
@@ -105,7 +106,7 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
 
 static void
 receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
-              hashtable *knownConnections);
+              hashtable *knownConnections, hashtable *blacklistConnections);
 
 static int
 macCmp(void *s1, void *s2);
@@ -128,7 +129,8 @@ static bool
 isTCPSegment(uint32_t nextHeader);
 
 static bool
-isAllowedConnection(frame buffer, hashtable *knownCookies);
+isAllowedConnection(frame buffer, hashtable *knownCookies, hashtable
+*blacklistConnections);
 /* Prototypes */
 
 /* Parse Options
@@ -418,7 +420,7 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
                     insertAllowedConnection(knownConnections,
                                             &segment->srcPort,
                                             &segment->destPort,
-                                            &header->destAddr);
+                                            header->destAddr);
                 }
             }
         }
@@ -440,7 +442,7 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
  */
 static void
 receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
-              hashtable *knownConnections) {
+              hashtable *knownConnections, hashtable *blacklistConnections) {
     frame              buffer;
     struct sockaddr_in receive;
     socklen_t          receiveLength = sizeof(struct sockaddr_in);
@@ -452,10 +454,12 @@ receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
     if (rdct < 0) {
         perror("recvfrom receiveBroadcast");
     } else {
-        if (isAllowedConnection(buffer, knownConnections)) {
-            if (!isBroadcast(buffer.destMac)) {
-                if (!hthaskey(*knownAddresses, buffer.srcMac, MACSIZE)) {
+        if (isAllowedConnection(buffer, knownConnections,
+                                blacklistConnections)) {
 
+            if (!isBroadcast(buffer.destMac)) {
+
+                if (!hthaskey(*knownAddresses, buffer.srcMac, MACSIZE)) {
                     char *key = malloc(MACSIZE);
                     memcpy(key, buffer.srcMac, MACSIZE);
 
@@ -470,6 +474,7 @@ receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
                         free(receiveSocket);
                         perror("htinsert receiveBroadcast");
                     }
+
                 } else {
                     void *value;
                     value = htfind(*knownAddresses, buffer.srcMac, MACSIZE);
@@ -482,6 +487,14 @@ receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
             }
         }
     }
+}
+
+/*
+ * Helper function for comparing two addresses for hashtable creation
+ */
+static
+int addrCmp(void *s1, void *s2) {
+    return memcmp(s1, s2, 16);
 }
 
 /*
@@ -554,32 +567,37 @@ bool isTCPSegment(uint32_t nextHeader) {
  * on a hashtable check. Essentially, this function checks if the frame is
  * IPv6 as well as checks if the nextHeader has a TCP segment. This function
  * also returns true if it's an IPv4 packet or just a UDP segment.
+ *
  */
 static bool
-isAllowedConnection(frame buffer, hashtable *knownCookies) {
-    bool allowed;
-    if (htons(buffer.type) == IPV6PACK) {
-        header_t *header = (header_t *) (&buffer)->payload;
-
-        if (isTCPSegment(header->nextHeader)) {
+isAllowedConnection(frame buffer, hashtable *knownCookies, hashtable
+*blacklistConnections) {
+    bool     allowed = false;
+    header_t *header = (header_t *) (&buffer)->payload;
+    if (!hthaskey(*blacklistConnections, header->sourceAddr, 16)) {
+        if (htons(buffer.type) == IPV6PACK &&
+            isTCPSegment(header->nextHeader)) {
             connectionKey *connection = malloc(sizeof(connectionKey));
             tcpSegment    *segment    = (tcpSegment *) header->payload;
-
             memcpy(&(connection)->localPort, &segment->destPort,
                    sizeof(uint16_t));
             memcpy(&(connection)->remotePort, &segment->srcPort,
                    sizeof(uint16_t));
             memcpy(&(connection)->remoteAddress, &header->sourceAddr, 16);
-            allowed = hthaskey(*knownCookies, connection,
-                               sizeof(connectionKey));
+
+            if (hthaskey(*knownCookies, connection,
+                         sizeof(connectionKey))) {
+                allowed = true;
+            } else {
+                unsigned char *connectionAddr = malloc(16);
+                memcpy(connectionAddr, header->sourceAddr, 16);
+                htinsert(*blacklistConnections, connectionAddr, 16, NULL);
+            }
 
             free(connection);
         } else {
             allowed = true;
         }
-
-    } else {
-        allowed = true;
     }
     return allowed;
 }
@@ -594,17 +612,20 @@ void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr) {
 
     int maxfd = mkfdset(&rdset, tap, bc, uc, 0);
 
-    hashtable knownAddresses   = htnew(32, macCmp, freeKeys);
-    hashtable knownConnections = htnew(32, connectionCmp, freeKeys);
+    hashtable knownAddresses       = htnew(32, macCmp, freeKeys);
+    hashtable knownConnections     = htnew(32, connectionCmp, freeKeys);
+    hashtable blacklistConnections = htnew(32, addrCmp, freeKeys);
 
     while (0 <= select(1 + maxfd, &rdset, NULL, NULL, NULL)) {
 
         if (FD_ISSET(tap, &rdset)) {
             sendTap(tap, uc, bcaddr, &knownAddresses, &knownConnections);
         } else if (FD_ISSET(uc, &rdset)) {
-            receiveBCorUC(tap, uc, &knownAddresses, &knownConnections);
+            receiveBCorUC(tap, uc, &knownAddresses, &knownConnections,
+                          &blacklistConnections);
         } else if (FD_ISSET(bc, &rdset)) {
-            receiveBCorUC(tap, bc, &knownAddresses, &knownConnections);
+            receiveBCorUC(tap, bc, &knownAddresses, &knownConnections,
+                          &blacklistConnections);
         }
 
         maxfd = mkfdset(&rdset, tap, bc, uc, 0);
