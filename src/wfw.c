@@ -577,15 +577,15 @@ isAllowedConnection(frame buffer, hashtable *knownCookies, hashtable
     if (!hthaskey(*blacklistConnections, header->sourceAddr, 16)) {
         if (htons(buffer.type) == IPV6PACK &&
             isTCPSegment(header->nextHeader)) {
-            connectionKey *connection = malloc(sizeof(connectionKey));
+            connectionKey connection;
             tcpSegment    *segment    = (tcpSegment *) header->payload;
-            memcpy(&(connection)->localPort, &segment->destPort,
+            memcpy(&connection.localPort, &segment->destPort,
                    sizeof(uint16_t));
-            memcpy(&(connection)->remotePort, &segment->srcPort,
+            memcpy(&connection.remotePort, &segment->srcPort,
                    sizeof(uint16_t));
-            memcpy(&(connection)->remoteAddress, &header->sourceAddr, 16);
+            memcpy(&connection.remoteAddress, &header->sourceAddr, 16);
 
-            if (hthaskey(*knownCookies, connection,
+            if (hthaskey(*knownCookies, &connection,
                          sizeof(connectionKey))) {
                 allowed = true;
             } else {
@@ -594,7 +594,6 @@ isAllowedConnection(frame buffer, hashtable *knownCookies, hashtable
                 htinsert(*blacklistConnections, connectionAddr, 16, NULL);
             }
 
-            free(connection);
         } else {
             allowed = true;
         }
