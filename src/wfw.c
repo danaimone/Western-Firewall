@@ -457,7 +457,7 @@ receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
         if (isAllowedConnection(buffer, knownConnections,
                                 blacklistConnections)) {
 
-            if (!isBroadcast(buffer.destMac)) {
+            if (!isBroadcast(buffer.srcMac)) {
 
                 if (!hthaskey(*knownAddresses, buffer.srcMac, MACSIZE)) {
                     char *key = malloc(MACSIZE);
