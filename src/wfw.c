@@ -18,6 +18,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <assert.h>
 
 /* Constants */
 #define STR1(x)   #x
@@ -31,6 +32,8 @@
 #define PID       "pidfile"
 #define TCPSEG    6
 #define IPV6PACK  0x86dd
+#define PEERPORT  "14253"
+#define IPV6SZ    16
 
 
 /* Globals  */
@@ -96,26 +99,30 @@ typedef struct Segment {
     uint16_t urgent;
     uint32_t *options;
 } tcpSegment;
+
 // @formatter:on
 
 /* Helper Functions */
-static void
-sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
-        hashtable *knownAddresses, hashtable *knownConnections);
-
-static void
-receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
-              hashtable *knownConnections);
-
 static int
 macCmp(void *s1, void *s2);
 
 static int
 connectionCmp(void *s1, void *s2);
 
+static int
+createTCPServer(char *address, char *port);
+
+static void
+sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
+        hashtable *knownAddresses, hashtable *knownConnections, hashtable
+        *blacklistedConnections);
+
+static void
+receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
+              hashtable *knownConnections, hashtable *blacklistConnections);
+
 static void
 freeKeys(void *key, void *val);
-
 
 static void
 insertAllowedConnection(hashtable *knownConnections, uint16_t *srcPort, uint16_t
@@ -128,7 +135,9 @@ static bool
 isTCPSegment(uint32_t nextHeader);
 
 static bool
-isAllowedConnection(frame buffer, hashtable *knownCookies);
+isAllowedConnection(frame buffer, hashtable *knownConnection, hashtable
+*blacklistConnections);
+
 /* Prototypes */
 
 /* Parse Options
@@ -201,7 +210,23 @@ int mkfdset(fd_set *set, ...);
  * socket.  Data broadcast on the socket is written to the tap.  
  */
 static
-void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr);
+void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr, int
+tcpServer, hashtable conf);
+
+
+/***
+ * Connect to the specified host and service
+ * @param name  The host name or address to connect to.
+ * @param service   The service name or service to connect to.
+ * @return      -1 or a connected socket.
+ *
+ * Note: a non-negative return is a newly created socket that shall be closed.
+ */
+static
+int connectTo(const char *name, const char *service);
+
+static
+void receiveBlacklist(int sock, hashtable *blacklistConnections);
 
 /* Daemonize
  * 
@@ -224,22 +249,24 @@ int main(int argc, char *argv[]) {
     } else if (printUsage) {
         usage(argv[0], stdout);
     } else {
-        hashtable conf   = readconf(confFile);
-        int       tap    = ensuretap(htstrfind(conf, DEVICE));
-        int       out    = ensuresocket(ANYIF, ANYPORT);
-        int       in     = ensuresocket(htstrfind(conf, BROADCAST),
-                                        htstrfind(conf, PORT));
+        hashtable conf      = readconf(confFile);
+        int       tap       = ensuretap(htstrfind(conf, DEVICE));
+        int       uc        = ensuresocket(ANYIF, ANYPORT);
+        int       bc        = ensuresocket(htstrfind(conf, BROADCAST),
+                                           htstrfind(conf, PORT));
+        int       tcpServer = createTCPServer(ANYIF, PEERPORT);
         struct sockaddr_in
-                  bcaddr = makesockaddr(htstrfind(conf, BROADCAST),
-                                        htstrfind(conf, PORT));
+                  bcaddr    = makesockaddr(htstrfind(conf, BROADCAST),
+                                           htstrfind(conf, PORT));
 
         if (!foreground)
             daemonize(conf);
-        bridge(tap, in, out, bcaddr);
+        bridge(tap, bc, uc, bcaddr, tcpServer, conf);
 
-        close(in);
-        close(out);
+        close(bc);
+        close(uc);
         close(tap);
+        close(tcpServer);
         htfree(conf);
     }
 
@@ -394,7 +421,8 @@ int mkfdset(fd_set *set, ...) {
  */
 static void
 sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
-        hashtable *knownAddresses, hashtable *knownConnections) {
+        hashtable *knownAddresses, hashtable *knownConnections, hashtable
+        *blacklistedConnections) {
     frame    buffer;
     header_t h;
     header_t *header = &h;
@@ -409,27 +437,29 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
             out = htfind(*knownAddresses, buffer.destMac, MACSIZE);
         }
 
-        if (htons(buffer.type) == IPV6PACK) {
-            header = (header_t *) (&buffer)->payload;
-            if (isTCPSegment(header->nextHeader)) {
-                tcpSegment *segment = (tcpSegment *) header->payload;
+        header = (header_t *) (&buffer)->payload;
+//        if (!hthaskey(*blacklistedConnections, header->sourceAddr, IPV6SZ)) {
+            if (htons(buffer.type) == IPV6PACK) {
+                if (isTCPSegment(header->nextHeader)) {
+                    tcpSegment *segment = (tcpSegment *) header->payload;
 
-                if (segment->SYN != 0) {
-                    insertAllowedConnection(knownConnections,
-                                            &segment->srcPort,
-                                            &segment->destPort,
-                                            &header->destAddr);
+                    if (segment->SYN != 0) {
+                        insertAllowedConnection(knownConnections,
+                                                &segment->srcPort,
+                                                &segment->destPort,
+                                                header->destAddr);
+                    }
                 }
             }
-        }
 
-
-        if (-1 == sendto(uc, &buffer, rdct, 0, (struct sockaddr *) out,
-                         sizeof(*out))) {
-            perror("sendto");
+            printf("We're sending it boys\n");
+            if (-1 == sendto(uc, &buffer, rdct, 0, (struct sockaddr *) out,
+                             sizeof(*out))) {
+                perror("sendto");
+            }
         }
     }
-}
+//}
 
 /*
  * receiveBCorUC
@@ -440,7 +470,7 @@ sendTap(int tapDevice, int uc, struct sockaddr_in bcaddress,
  */
 static void
 receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
-              hashtable *knownConnections) {
+              hashtable *knownConnections, hashtable *blacklistConnections) {
     frame              buffer;
     struct sockaddr_in receive;
     socklen_t          receiveLength = sizeof(struct sockaddr_in);
@@ -452,10 +482,12 @@ receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
     if (rdct < 0) {
         perror("recvfrom receiveBroadcast");
     } else {
-        if (isAllowedConnection(buffer, knownConnections)) {
-            if (!isBroadcast(buffer.destMac)) {
-                if (!hthaskey(*knownAddresses, buffer.srcMac, MACSIZE)) {
+        if (isAllowedConnection(buffer, knownConnections,
+                                blacklistConnections)) {
 
+            if (!isBroadcast(buffer.destMac)) {
+
+                if (!hthaskey(*knownAddresses, buffer.srcMac, MACSIZE)) {
                     char *key = malloc(MACSIZE);
                     memcpy(key, buffer.srcMac, MACSIZE);
 
@@ -470,6 +502,7 @@ receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
                         free(receiveSocket);
                         perror("htinsert receiveBroadcast");
                     }
+
                 } else {
                     void *value;
                     value = htfind(*knownAddresses, buffer.srcMac, MACSIZE);
@@ -482,6 +515,14 @@ receiveBCorUC(int tapDevice, int bcOrUC, hashtable *knownAddresses,
             }
         }
     }
+}
+
+/*
+ * Helper function for comparing two addresses for hashtable creation
+ */
+static
+int addrCmp(void *s1, void *s2) {
+    return memcmp(s1, s2, IPV6SZ);
 }
 
 /*
@@ -501,6 +542,26 @@ int connectionCmp(void *s1, void *s2) {
     return memcmp(s1, s2, sizeof(connectionKey));
 }
 
+static int
+createTCPServer(char *localAddress, char *port) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (-1 == sock) {
+        perror("createTCPServer socket");
+        exit(EXIT_FAILURE);
+    }
+
+    struct sockaddr_in address = makesockaddr(localAddress, port);
+    if (0 != bind(sock, (struct sockaddr *) &address, sizeof(address))) {
+        perror("createTCPServer bind");
+        exit(EXIT_FAILURE);
+    }
+
+    if (-1 == listen(sock, 1))
+        perror("createTCPServer listen");
+
+    return sock;
+}
+
 /*
  * Helper function to insert an allowed connection key into hashtable from
  * sendTap
@@ -511,7 +572,7 @@ insertAllowedConnection(hashtable *knownConnections, uint16_t *srcPort, uint16_t
     connectionKey *allowedConnection = malloc(sizeof(connectionKey));
     memcpy(&allowedConnection->localPort, srcPort, sizeof(uint16_t));
     memcpy(&allowedConnection->remotePort, destPort, sizeof(uint16_t));
-    memcpy(&allowedConnection->remoteAddress, destAddr, 16);
+    memcpy(&allowedConnection->remoteAddress, destAddr, IPV6SZ);
     htinsert(*knownConnections, allowedConnection, sizeof(connectionKey), 0);
 }
 
@@ -554,34 +615,116 @@ bool isTCPSegment(uint32_t nextHeader) {
  * on a hashtable check. Essentially, this function checks if the frame is
  * IPv6 as well as checks if the nextHeader has a TCP segment. This function
  * also returns true if it's an IPv4 packet or just a UDP segment.
+ *
  */
 static bool
-isAllowedConnection(frame buffer, hashtable *knownCookies) {
-    bool allowed;
-    if (htons(buffer.type) == IPV6PACK) {
-        header_t *header = (header_t *) (&buffer)->payload;
-
-        if (isTCPSegment(header->nextHeader)) {
-            connectionKey *connection = malloc(sizeof(connectionKey));
-            tcpSegment    *segment    = (tcpSegment *) header->payload;
-
-            memcpy(&(connection)->localPort, &segment->destPort,
+isAllowedConnection(frame buffer, hashtable *knownConnection, hashtable
+*blacklistConnections) {
+    bool     allowed = false;
+    header_t *header = (header_t *) (&buffer)->payload;
+    if (!hthaskey(*blacklistConnections, header->sourceAddr, IPV6SZ)) {
+        if (htons(buffer.type) == IPV6PACK &&
+            isTCPSegment(header->nextHeader)) {
+            connectionKey connection;
+            tcpSegment    *segment = (tcpSegment *) header->payload;
+            memcpy(&connection.localPort, &segment->destPort,
                    sizeof(uint16_t));
-            memcpy(&(connection)->remotePort, &segment->srcPort,
+            memcpy(&connection.remotePort, &segment->srcPort,
                    sizeof(uint16_t));
-            memcpy(&(connection)->remoteAddress, &header->sourceAddr, 16);
-            allowed = hthaskey(*knownCookies, connection,
-                               sizeof(connectionKey));
+            memcpy(&connection.remoteAddress, &header->sourceAddr, IPV6SZ);
 
-            free(connection);
+            if (hthaskey(*knownConnection, &connection,
+                         sizeof(connectionKey))) {
+                printf("Allowed true due to known connection\n");
+                allowed = true;
+            } else {
+                unsigned char *connectionAddr = malloc(IPV6SZ);
+                memcpy(connectionAddr, header->sourceAddr, IPV6SZ);
+                printf("Blacklisted ");
+                for (int i = 0; i < IPV6SZ; ++i) {
+                    printf("%x", connectionAddr[i]);
+                }
+                printf("\n \n");
+                htinsert(*blacklistConnections, connectionAddr, IPV6SZ, NULL);
+                //TODO: helper function to create TCP socket short term
+                // connection to share blacklist
+            }
+
         } else {
             allowed = true;
+            printf("Allowed true due to not ipv6 and tcp\n");
         }
-
-    } else {
-        allowed = true;
     }
     return allowed;
+}
+
+/* Connect to service/host
+ *
+ */
+
+/***
+ * Try to connect
+ * This function will create a new socket and try to connect to the
+ * socketaddr contained within the provided addrinfo structure.
+ *
+ * @param ai    An addr info structure.
+ * @return      -1 or a socket connected to the sockaddr within ai.
+ */
+int tryConnect(struct addrinfo *ai) {
+    assert(ai);
+    int s = socket(ai->ai_family, ai->ai_socktype, 0);
+    if (s != -1 && 0 != connect(s, ai->ai_addr, ai->ai_addrlen)) {
+        close(socket);
+        s = -1;
+    }
+
+    return socket;
+}
+
+static
+int connectTo(const char *name, const char *service) {
+    assert(name != NULL);
+    assert(service != NULL);
+
+    int s = -1;
+
+    struct addrinfo hint;
+    bzero(&hint, sizeof(struct addrinfo));
+    hint.ai_socktype = SOCK_STREAM;
+    hint.ai_family   = AF_INET;
+
+    struct addrinfo *info = NULL;
+
+    if (0 == getaddrinfo(name, service, &hint, &info) &&
+        NULL != info) {
+        struct addrinfo *p = info;
+        s = tryConnect(p);
+        while (s == -1 && p->ai_next != NULL) {
+            p = p->ai_next;
+            s = tryConnect(p);
+        }
+
+    }
+    return s;
+}
+
+static
+void receiveBlacklist(int sock, hashtable *blacklistConnections) {
+    unsigned char buffer[IPV6SZ];
+    struct sockaddr_in client;
+    socklen_t len = sizeof(client);
+    int clientFD = accept(sock, (struct sockaddr *) &clientFD, &len);
+
+    while (0 < read(clientFD, buffer, IPV6SZ)) { }
+
+    shutdown(clientFD, SHUT_RD);
+    close(clientFD);
+
+    if (!hthaskey(*blacklistConnections, buffer, IPV6SZ)) {
+        char* blacklistConnection = malloc(IPV6SZ);
+        memcpy(blacklistConnection, buffer, IPV6SZ);
+        htinsert(*blacklistConnections, blacklistConnection, IPV6SZ, NULL);
+    }
 }
 
 /* Bridge
@@ -589,22 +732,29 @@ isAllowedConnection(frame buffer, hashtable *knownCookies) {
  * Note the use of select, sendto, and recvfrom.  
  */
 static
-void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr) {
+void bridge(int tap, int bc, int uc, struct sockaddr_in bcaddr, int
+tcpServer, hashtable conf) {
     fd_set rdset;
 
     int maxfd = mkfdset(&rdset, tap, bc, uc, 0);
 
-    hashtable knownAddresses   = htnew(32, macCmp, freeKeys);
-    hashtable knownConnections = htnew(32, connectionCmp, freeKeys);
+    hashtable knownAddresses       = htnew(32, macCmp, freeKeys);
+    hashtable knownConnections     = htnew(32, connectionCmp, freeKeys);
+    hashtable blacklistConnections = htnew(32, addrCmp, freeKeys);
 
     while (0 <= select(1 + maxfd, &rdset, NULL, NULL, NULL)) {
 
         if (FD_ISSET(tap, &rdset)) {
-            sendTap(tap, uc, bcaddr, &knownAddresses, &knownConnections);
+            sendTap(tap, uc, bcaddr, &knownAddresses, &knownConnections, &blacklistConnections);
         } else if (FD_ISSET(uc, &rdset)) {
-            receiveBCorUC(tap, uc, &knownAddresses, &knownConnections);
+            receiveBCorUC(tap, uc, &knownAddresses, &knownConnections,
+                          &blacklistConnections);
         } else if (FD_ISSET(bc, &rdset)) {
-            receiveBCorUC(tap, bc, &knownAddresses, &knownConnections);
+            receiveBCorUC(tap, bc, &knownAddresses, &knownConnections,
+                          &blacklistConnections);
+//        } else if (FD_ISSET(tcpServer, &rdset)) {
+//            receiveBlacklist(tcpServer, &blacklistConnections);
+//        }
         }
 
         maxfd = mkfdset(&rdset, tap, bc, uc, 0);
