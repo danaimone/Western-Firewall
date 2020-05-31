@@ -18,6 +18,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <assert.h>
 
 /* Constants */
 #define STR1(x)   #x
@@ -43,6 +44,7 @@ static unsigned char  local_ip[16] = {0xfd, 0x10, 0x20, 0x20,
                                       0xc5, 0xc1, 0x3, 0x67,
                                       0xdb, 0x8b, 0xc1, 0x5b,
                                       0x5e, 0xec, 0xf0, 0xca};
+static unsigned char local_mac[6] = {0xf2, 0x0b, 0xa4, 0xdf, 0x42, 0x01};
 
 /* Structs */
 typedef struct EthernetFrame {
@@ -647,6 +649,7 @@ isAllowedConnection(frame buffer, hashtable *known_cookies, hashtable
 *blacklist_connections, hashtable *conf) {
     bool     allowed = false;
     header_t *header = (header_t *) (&buffer)->payload;
+
     if (!hthaskey(*blacklist_connections, header->source_addr, 16)) {
         unsigned short type = htons((&buffer)->type);
         if (memcmp(&type, &IPV6, 2) == 0 &&
