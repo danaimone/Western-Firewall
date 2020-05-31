@@ -768,7 +768,6 @@ tcp_server, hashtable conf) {
         }
 
         maxfd = mkFDSet(&rd_set, tap, bc, uc, 0);
-        // TODO: occasionally send out the blacklist address
     }
 }
 
