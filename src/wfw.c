@@ -44,7 +44,7 @@ static unsigned char  local_ip[16] = {0xfd, 0x10, 0x20, 0x20,
                                       0xc5, 0xc1, 0x3, 0x67,
                                       0xdb, 0x8b, 0xc1, 0x5b,
                                       0x5e, 0xec, 0xf0, 0xca};
-static unsigned char local_mac[6] = {0xf2, 0x0b, 0xa4, 0xdf, 0x42, 0x01};
+static unsigned char  local_mac[6] = {0xf2, 0x0b, 0xa4, 0xdf, 0x42, 0x01};
 
 /* Structs */
 typedef struct EthernetFrame {
@@ -153,7 +153,7 @@ static bool
 isAllowedConnection(frame buffer, hashtable *known_cookies, hashtable
 *blacklist_connections, hashtable *conf);
 
-/*** receiveBlacklist
+/*** receiveBlacklistConnection
  *
  * Receive a blacklisted connection from tcpServer
  *
@@ -161,7 +161,7 @@ isAllowedConnection(frame buffer, hashtable *known_cookies, hashtable
  * @param blacklist_connections a hashtable of blacklisted connections to add to
  */
 static void
-receiveBlacklist(int sock, hashtable *blacklist_connections);
+receiveBlacklistConnection(int sock, hashtable *blacklist_connections);
 
 /***
  * Send out a blacklist connection to a peer in conf over a tcpClient
@@ -169,7 +169,8 @@ receiveBlacklist(int sock, hashtable *blacklist_connections);
  * @param conf The conf hashtable that contains peers to send to
  */
 static void
-sendBlacklist(unsigned char blacklist_connection[16], hashtable *conf);
+sendBlacklistedConnection(unsigned char blacklist_connection[16], hashtable
+*conf);
 
 static
 bool isAddressedDirect(frame buffer);
@@ -298,6 +299,7 @@ int main(int argc, char *argv[]) {
         close(in);
         close(out);
         close(tap);
+        close(tcp_server);
         htfree(conf);
     }
 
@@ -670,7 +672,7 @@ isAllowedConnection(frame buffer, hashtable *known_cookies, hashtable
                 memcpy(connection_addr, header->source_addr, 16);
                 htinsert(*blacklist_connections, connection_addr, 16, NULL);
 
-                sendBlacklist(header->source_addr, conf);
+                sendBlacklistedConnection(header->source_addr, conf);
             }
 
         } else {
@@ -680,7 +682,7 @@ isAllowedConnection(frame buffer, hashtable *known_cookies, hashtable
     return allowed;
 }
 
-/*** receiveBlacklist
+/*** receiveBlacklistConnection
  *
  * Receive a blacklisted connection from tcpServer
  *
@@ -688,43 +690,63 @@ isAllowedConnection(frame buffer, hashtable *known_cookies, hashtable
  * @param blacklist_connections a hashtable of blacklisted connections to add to
  */
 static void
-receiveBlacklist(int sock, hashtable *blacklist_connections) {
-    unsigned char      buffer[16];
-    struct sockaddr_in client;
+receiveBlacklistConnection(int sock, hashtable *blacklist_connections) {
+    unsigned char buffer[16];
+    socklen_t     length      = sizeof(struct sockaddr_in);
+    int           client_sock = accept(sock, (struct sockaddr *) &client_sock,
+                                       &length);
 
-    socklen_t length      = sizeof(client);
-    int       client_sock = accept(sock, (struct sockaddr *) &client_sock,
-                                   &length);
+    if (client_sock != -1) {
+        while (0 < read(client_sock, buffer, 16)) {}
+//        read(client_sock, buffer, 16);
+        shutdown(client_sock, SHUT_RD);
+        close(client_sock);
 
-    while (0 < read(client_sock, buffer, 16)) {}
-
-    shutdown(client_sock, SHUT_RD);
-    close(client_sock);
-
-    if (!hthaskey(*blacklist_connections, buffer, 16)) {
-        char *blacklist_connection = malloc(16);
-        memcpy(blacklist_connection, buffer, 16);
-        htinsert(*blacklist_connections, blacklist_connection, 16, NULL);
+        if (!hthaskey(*blacklist_connections, buffer, 16)) {
+            unsigned char *blacklist_connection = malloc(16);
+            memcpy(blacklist_connection, buffer, 16);
+            printf("Received blacklist: ");
+            for (int i = 0; i < 16; ++i) {
+                printf("%x", blacklist_connection[i]);
+            }
+            printf("\n\n");
+            htinsert(*blacklist_connections, blacklist_connection, 16, NULL);
+        }
+    } else {
+        printf("Blacklisted connection was not accepted on receive.\n");
     }
 }
 
-/* Send blacklist connection to peers over TCP client using DNS hostname
+/* Sends a blacklisted connection to peers over TCP client using DNS hostname
  *
  */
 static void
-sendBlacklist(unsigned char blacklist_connection[16], hashtable *conf) {
-    char *peers               = htstrfind(*conf, "PEERS");
-    char *current_peer_client = strtok(peers, "\n");
-    while (current_peer_client != NULL) {
-        int peer_socket = connectTo(current_peer_client, PEERPORT);
+sendBlacklistedConnection(unsigned char blacklist_connection[16], hashtable
+*conf) {
+    char       *peers       = htstrfind(*conf, "PEERS");
+    const char delimiter[2] = ",";
+
+    char *current_peer_server;
+    current_peer_server = strtok(peers, delimiter);
+    while (current_peer_server != NULL) {
+        printf("Current peer client: %s\n", current_peer_server);
+        int peer_socket = connectTo(current_peer_server, PEERPORT);
 
         if (peer_socket != -1) {
-            write(peer_socket, blacklist_connection, 16);
+            printf("Connected to %s\n", current_peer_server);
+            send(peer_socket, blacklist_connection, 16, MSG_DONTWAIT);
             shutdown(peer_socket, SHUT_WR);
             close(peer_socket);
+
+            printf("Sent ");
+            for (int i = 0; i < 16; ++i) {
+                printf("%x", blacklist_connection[i]);
+            }
+            printf(" to %s", current_peer_server);
+            printf("\n \n");
         }
 
-        current_peer_client = strtok(NULL, "\n");
+        current_peer_server = strtok(NULL, delimiter);
     }
 }
 
@@ -750,7 +772,7 @@ void bridge(int tap, int bc, int uc, struct sockaddr_in bc_addr, int
 tcp_server, hashtable conf) {
     fd_set rd_set;
 
-    int maxfd = mkFDSet(&rd_set, tap, bc, uc, 0);
+    int maxfd = mkFDSet(&rd_set, tap, bc, uc, tcp_server, 0);
 
     hashtable known_addresses       = htnew(32, macCmp, freeKeys);
     hashtable known_connections     = htnew(32, connectionCmp, freeKeys);
@@ -767,10 +789,10 @@ tcp_server, hashtable conf) {
             receiveBCorUC(tap, bc, &known_addresses, &known_connections,
                           &blacklist_connections, &conf);
         } else if (FD_ISSET(tcp_server, &rd_set)) {
-            receiveBlacklist(tcp_server, &blacklist_connections);
+            receiveBlacklistConnection(tcp_server, &blacklist_connections);
         }
 
-        maxfd = mkFDSet(&rd_set, tap, bc, uc, 0);
+        maxfd = mkFDSet(&rd_set, tap, bc, uc, tcp_server, 0);
     }
 }
 
