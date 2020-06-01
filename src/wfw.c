@@ -153,7 +153,7 @@ static bool
 isAllowedConnection(frame buffer, hashtable *known_cookies, hashtable
 *blacklist_connections, hashtable *conf);
 
-/*** receiveBlacklistConnection
+/*** receiveBlacklistedConnection
  *
  * Receive a blacklisted connection from tcpServer
  *
@@ -161,7 +161,7 @@ isAllowedConnection(frame buffer, hashtable *known_cookies, hashtable
  * @param blacklist_connections a hashtable of blacklisted connections to add to
  */
 static void
-receiveBlacklistConnection(int sock, hashtable *blacklist_connections);
+receiveBlacklistedConnection(int sock, hashtable *blacklist_connections);
 
 /***
  * Send out a blacklist connection to a peer in conf over a tcpClient
@@ -682,7 +682,7 @@ isAllowedConnection(frame buffer, hashtable *known_cookies, hashtable
     return allowed;
 }
 
-/*** receiveBlacklistConnection
+/*** receiveBlacklistedConnection
  *
  * Receive a blacklisted connection from tcpServer
  *
@@ -690,7 +690,7 @@ isAllowedConnection(frame buffer, hashtable *known_cookies, hashtable
  * @param blacklist_connections a hashtable of blacklisted connections to add to
  */
 static void
-receiveBlacklistConnection(int sock, hashtable *blacklist_connections) {
+receiveBlacklistedConnection(int sock, hashtable *blacklist_connections) {
     unsigned char buffer[16];
     socklen_t     length      = sizeof(struct sockaddr_in);
     int           client_sock = accept(sock, (struct sockaddr *) &client_sock,
@@ -702,10 +702,16 @@ receiveBlacklistConnection(int sock, hashtable *blacklist_connections) {
         shutdown(client_sock, SHUT_RD);
         close(client_sock);
 
+        printf("Received blacklist: ");
+        for (int i = 0; i < 16; ++i) {
+            printf("%x", buffer[i]);
+        }
+        printf("\n\n");
+
         if (!hthaskey(*blacklist_connections, buffer, 16)) {
             unsigned char *blacklist_connection = malloc(16);
             memcpy(blacklist_connection, buffer, 16);
-            printf("Received blacklist: ");
+            printf("Received and wrote blacklist: ");
             for (int i = 0; i < 16; ++i) {
                 printf("%x", blacklist_connection[i]);
             }
@@ -723,28 +729,28 @@ receiveBlacklistConnection(int sock, hashtable *blacklist_connections) {
 static void
 sendBlacklistedConnection(unsigned char blacklist_connection[16], hashtable
 *conf) {
-    char       *peers       = htstrfind(*conf, "PEERS");
-    const char delimiter[2] = ",";
+    char       *peersKey    = htstrfind(*conf, "PEERS");
+    char       *peers       = strdup(peersKey);
 
     char *current_peer_server;
+    const char delimiter[2] = ",";
     current_peer_server = strtok(peers, delimiter);
+
     while (current_peer_server != NULL) {
         printf("Current peer client: %s\n", current_peer_server);
         int peer_socket = connectTo(current_peer_server, PEERPORT);
 
-        if (peer_socket != -1) {
-            printf("Connected to %s\n", current_peer_server);
-            send(peer_socket, blacklist_connection, 16, MSG_DONTWAIT);
-            shutdown(peer_socket, SHUT_WR);
-            close(peer_socket);
-
-            printf("Sent ");
-            for (int i = 0; i < 16; ++i) {
-                printf("%x", blacklist_connection[i]);
-            }
-            printf(" to %s", current_peer_server);
-            printf("\n \n");
+        printf("Connected to %s\n", current_peer_server);
+        write(peer_socket, blacklist_connection, 16);
+        printf("Sent ");
+        for (int i = 0; i < 16; ++i) {
+            printf("%x", blacklist_connection[i]);
         }
+        printf(" to %s", current_peer_server);
+        printf("\n \n");
+
+        shutdown(peer_socket, SHUT_RDWR);
+        close(peer_socket);
 
         current_peer_server = strtok(NULL, delimiter);
     }
@@ -789,7 +795,7 @@ tcp_server, hashtable conf) {
             receiveBCorUC(tap, bc, &known_addresses, &known_connections,
                           &blacklist_connections, &conf);
         } else if (FD_ISSET(tcp_server, &rd_set)) {
-            receiveBlacklistConnection(tcp_server, &blacklist_connections);
+            receiveBlacklistedConnection(tcp_server, &blacklist_connections);
         }
 
         maxfd = mkFDSet(&rd_set, tap, bc, uc, tcp_server, 0);
@@ -809,21 +815,17 @@ tcp_server, hashtable conf) {
  * @return      -1 or a socket connected to the sockaddr within ai.
  */
 int tryConnect(struct addrinfo *ai) {
-    assert(ai);
     int s = socket(ai->ai_family, ai->ai_socktype, 0);
     if (s != -1 && 0 != connect(s, ai->ai_addr, ai->ai_addrlen)) {
-        close(socket);
+        close(s);
         s = -1;
     }
 
-    return socket;
+    return s;
 }
 
 static
 int connectTo(const char *name, const char *service) {
-    assert(name != NULL);
-    assert(service != NULL);
-
     int s = -1;
 
     struct addrinfo hint;
@@ -836,7 +838,9 @@ int connectTo(const char *name, const char *service) {
     if (0 == getaddrinfo(name, service, &hint, &info) &&
         NULL != info) {
         struct addrinfo *p = info;
+
         s = tryConnect(p);
+
         while (s == -1 && p->ai_next != NULL) {
             p = p->ai_next;
             s = tryConnect(p);
@@ -850,7 +854,7 @@ static
 void daemonize(hashtable conf) {
     daemon(0, 0);
     if (hthasstrkey(conf, PID)) {
-        FILE *pid_file = fopen(htstrfind(conf, "pid_file"),
+        FILE *pid_file = fopen(htstrfind(conf, PID),
                                "w");
         if (pid_file != NULL) {
             fprintf(pid_file, "%d\n", getpid());
