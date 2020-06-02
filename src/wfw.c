@@ -773,7 +773,6 @@ receiveBlacklistedConnection(int sock, hashtable *blacklist_connections) {
 
     if (client_sock != -1) {
         while (0 < read(client_sock, buffer, 16)) {}
-//        read(client_sock, buffer, 16);
         shutdown(client_sock, SHUT_RD);
         close(client_sock);
 
