@@ -605,7 +605,8 @@ receiveBCorUC(int tap_device, int bc_or_uc, hashtable *known_mac_addresses,
 
                 if (!isBroadcast(buffer.src_mac)) {
 
-                    if (!hthaskey(*known_mac_addresses, buffer.src_mac, MACSIZE)) {
+                    if (!hthaskey(*known_mac_addresses, buffer.src_mac,
+                                  MACSIZE)) {
                         char *key = malloc(MACSIZE);
                         memcpy(key, buffer.src_mac, MACSIZE);
 
