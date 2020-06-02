@@ -933,7 +933,6 @@ int timedConnect(int              sock,
  */
 static
 int tryConnect(struct addrinfo* ai) {
-    assert(ai);
     struct timeval tv = {1,0};
     int s = socket(ai->ai_family, ai->ai_socktype, 0);
     if(s != -1 && 0 != timedConnect(s, ai->ai_addr, ai->ai_addrlen, tv)) {
@@ -947,14 +946,12 @@ int tryConnect(struct addrinfo* ai) {
 
 static
 int connectTo(const char* name, const char* svc) {
-    assert(name != NULL);
-    assert(svc  != NULL);
-
     int s = -1;
 
     struct addrinfo hint;
     bzero(&hint, sizeof(struct addrinfo));
     hint.ai_socktype = SOCK_STREAM;
+    hint.ai_family = AF_INET;
 
     struct addrinfo* info = NULL;
 
