@@ -113,6 +113,7 @@ hashtable readconf(char* filename) {
   FILE* file = fopen(filename, "r");
   if(file != NULL) {
     ht = freadconf(file);
+    fclose(file);
   }
   
   return ht;
