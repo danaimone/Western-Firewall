@@ -108,36 +108,127 @@ typedef struct Segment {
 // @formatter:on
 
 /* Helper Functions */
+
+/***
+ * Sends packets out from the tap device. If the packet is an ipv6 packet with
+ * a TCP segment and a set SYN bit, the connection request is inserted into a
+ * known_connections hashtable.
+ *
+ * @param tap_device the file descriptor of the tap device
+ * @param uc file descriptor for unicast socket
+ * @param bc_address the broadcast address
+ * @param known_addresses known mac addresses hashtable
+ * @param known_connections known connection keys hashtable
+ */
 static void
 sendTap(int tap_device, int uc, struct sockaddr_in bc_address,
         hashtable *known_addresses, hashtable *known_connections);
 
+/***
+ * receive BC or UC
+ *
+ * Listens on the tap device for incoming unicast or broadcast packets.
+ * If the packet is not an IPV6 packet and a TCP segment that is a known
+ * connection, it is blocked.
+ *
+ * @param tap_device the file descriptor of the tap device
+ * @param bc_or_uc the file descriptor of either the bc or uc socket
+ * @param known_mac_addresses hashtable of known mac addresses
+ * @param known_connections hashtable of known connection keys
+ * @param blacklist_connections hashtable of blacklisted connections
+ * @param conf the conf hashtable that contains peers for checking if allowed
+ */
 static void
-receiveBCorUC(int tap_device, int bc_or_uc, hashtable *known_addresses,
+receiveBCorUC(int tap_device, int bc_or_uc, hashtable *known_mac_addresses,
               hashtable *known_connections, hashtable *blacklist_connections,
               hashtable *conf);
 
-static int
-macCmp(void *s1, void *s2);
+/***
+ * address comparison
+ * Compares two ipv6 addresses for hashtable comparison
+ * @param ipv6_1 an ipv6 address
+ * @param ipv6_2 an ipv6 address
+ * @return the bytes comparable between two addresses
+ */
+static
+int addrCmp(void *ipv6_1, void *ipv6_2);
 
+/***
+ * mac address comparison
+ * Compares two mac addresses for hashtable comparison
+ * @param mac_1 a mac address
+ * @param mac_2 a mac address
+ * @return  the bytes comparable between the two mac addresses
+ */
 static int
-connectionCmp(void *s1, void *s2);
+macCmp(void *mac_1, void *mac_2);
 
+/***
+ * connection key comparison
+ * Compares two connection keys for hashtable comparison
+ * @param connection_key1 a connection key
+ * @param connection_key2 a connection key
+ * @return the bytes comparable between the two connection keys
+ */
+static int
+connectionCmp(void *connection_key1, void *connection_key2);
+
+/***
+ * create TCP server and listen
+ *
+ * Setups a TCP server on the specified port and makes the necessary calls
+ * to bind and listen. Makes use of makesockaddr to create a socket address.
+ * @param address The address to bind the socket to
+ * @param port The port to bind the socket to
+ * @return A file descriptor for the created server
+ */
 static int
 createTCPServerAndListen(char *address, char *port);
 
+/***
+ * free keys
+ * Helper void pointer function to free the key value pairs of a hashtable.
+ * @param key key to be freed
+ * @param val value to be freed
+ */
 static void
 freeKeys(void *key, void *val);
 
-
+/***
+ * Insert Allowed Connection
+ * Inserts an allowed connection into the known connections hashtable if we
+ * received a TCP SYN.
+ *
+ * @param known_connections the known connections hashtable to insert into
+ * @param src_port the local port
+ * @param dest_port the remotes port
+ * @param dest_addr the receiver's destination IPV6 address
+ */
 static void
 insertAllowedConnection(hashtable *known_connections, uint16_t *src_port,
                         uint16_t
                         *dest_port, unsigned char *dest_addr);
 
+/***
+ * is broadcast
+ * Helper function to check if a mac address is a broadcast address
+ * Checks both the ff:ff:ff:ff:ff broadcast as well as the 33:33:.... address
+ *
+ * @param address an 8 byte mac address to check
+ * @return true if broadcast, false otherwise
+ */
 static bool
 isBroadcast(unsigned char *address);
 
+/***
+ * is a tcp segment
+ * Helper function to check if the next header can be identified as a TCP
+ * segment
+ * @param next_header header_t struct's next header field that has been
+ * filled from a buffer payload
+ *
+ * @return true if the next header is TCP, false otherwise
+ */
 static bool
 isTCPSegment(uint32_t next_header);
 
@@ -172,8 +263,17 @@ static void
 sendBlacklistedConnection(unsigned char blacklist_connection[16], hashtable
 *conf);
 
+/***
+ * Is Addressed Direct
+ *
+ * This function checks whether a frame is directly addressed to us.
+ *
+ * @param buffer the frame to check
+ * @return true if addressed directly, false otherwise
+ */
 static
 bool isAddressedDirect(frame buffer);
+
 /* Prototypes */
 
 /* Parse Options
@@ -259,7 +359,6 @@ tcp_server, hashtable conf);
  */
 static
 int connectTo(const char *name, const char *service);
-
 
 /* Daemonize
  * 
@@ -445,13 +544,6 @@ int mkFDSet(fd_set *set, ...) {
 }
 
 
-/*
- * sendTap
- *
- * Sends packets out from the tap device. If the packet is an ipv6 packet with
- * a TCP segment and a set SYN bit, the connection request is inserted into a
- * hashtable for use in receiveBCorUC.
- */
 static void
 sendTap(int tap_device, int uc, struct sockaddr_in bc_address,
         hashtable *known_addresses, hashtable *known_connections) {
@@ -492,15 +584,8 @@ sendTap(int tap_device, int uc, struct sockaddr_in bc_address,
     }
 }
 
-/*
- * receiveBCorUC
- *
- * Listens on the tap device for incoming packets that are either directly
- * addressed (uc) or broadcasted (bc). If the packet is not an ipV6 packet and
- * a TCP segment that is a trusted connection, it is blocked.
- */
 static void
-receiveBCorUC(int tap_device, int bc_or_uc, hashtable *known_addresses,
+receiveBCorUC(int tap_device, int bc_or_uc, hashtable *known_mac_addresses,
               hashtable *known_connections, hashtable *blacklist_connections,
               hashtable *conf) {
     frame              buffer;
@@ -520,7 +605,7 @@ receiveBCorUC(int tap_device, int bc_or_uc, hashtable *known_addresses,
 
                 if (!isBroadcast(buffer.src_mac)) {
 
-                    if (!hthaskey(*known_addresses, buffer.src_mac, MACSIZE)) {
+                    if (!hthaskey(*known_mac_addresses, buffer.src_mac, MACSIZE)) {
                         char *key = malloc(MACSIZE);
                         memcpy(key, buffer.src_mac, MACSIZE);
 
@@ -529,7 +614,7 @@ receiveBCorUC(int tap_device, int bc_or_uc, hashtable *known_addresses,
                         memcpy(receive_socket, &receive,
                                sizeof(struct sockaddr_in));
 
-                        if (!htinsert(*known_addresses, key, MACSIZE,
+                        if (!htinsert(*known_mac_addresses, key, MACSIZE,
                                       receive_socket)) {
                             free(key);
                             free(receive_socket);
@@ -538,7 +623,7 @@ receiveBCorUC(int tap_device, int bc_or_uc, hashtable *known_addresses,
 
                     } else {
                         void *value;
-                        value = htfind(*known_addresses, buffer.src_mac,
+                        value = htfind(*known_mac_addresses, buffer.src_mac,
                                        MACSIZE);
                         memcpy(value, &receive, sizeof(struct sockaddr_in));
                     }
@@ -552,29 +637,19 @@ receiveBCorUC(int tap_device, int bc_or_uc, hashtable *known_addresses,
     }
 }
 
-/*
- * Helper function for comparing two addresses for hashtable creation
- */
 static
-int addrCmp(void *s1, void *s2) {
-    return memcmp(s1, s2, 16);
+int addrCmp(void *ipv6_1, void *ipv6_2) {
+    return memcmp(ipv6_1, ipv6_2, 16);
 }
 
-/*
- * Helper function for comparing two values for hashtable creation
- */
 static
-int macCmp(void *s1, void *s2) {
-    return memcmp(s1, s2, MACSIZE);
+int macCmp(void *mac_1, void *mac_2) {
+    return memcmp(mac_1, mac_2, MACSIZE);
 }
 
-/*
- * Helper function to compare two values for allowedConnections hashtable
- * creation
- */
 static
-int connectionCmp(void *s1, void *s2) {
-    return memcmp(s1, s2, sizeof(connectionKey));
+int connectionCmp(void *connection_key1, void *connection_key2) {
+    return memcmp(connection_key1, connection_key2, sizeof(connectionKey));
 }
 
 static int
@@ -710,7 +785,7 @@ receiveBlacklistedConnection(int sock, hashtable *blacklist_connections) {
 
         if (!hthaskey(*blacklist_connections, buffer, 16)) {
             unsigned char *blacklist_connection = malloc(16);
-            memcpy(blacklist_connection, buffer, 16);
+            memcpy(blacklist_connection, &buffer, 16);
             printf("Received and wrote blacklist: ");
             for (int i = 0; i < 16; ++i) {
                 printf("%x", blacklist_connection[i]);
@@ -729,10 +804,10 @@ receiveBlacklistedConnection(int sock, hashtable *blacklist_connections) {
 static void
 sendBlacklistedConnection(unsigned char blacklist_connection[16], hashtable
 *conf) {
-    char       *peersKey    = htstrfind(*conf, "PEERS");
-    char       *peers       = strdup(peersKey);
+    char *peersKey          = htstrfind(*conf, "PEERS");
+    char *peers             = strdup(peersKey);
 
-    char *current_peer_server;
+    char       *current_peer_server;
     const char delimiter[2] = ",";
     current_peer_server = strtok(peers, delimiter);
 
@@ -780,19 +855,19 @@ tcp_server, hashtable conf) {
 
     int maxfd = mkFDSet(&rd_set, tap, bc, uc, tcp_server, 0);
 
-    hashtable known_addresses       = htnew(32, macCmp, freeKeys);
+    hashtable known_mac_addresses   = htnew(32, macCmp, freeKeys);
     hashtable known_connections     = htnew(32, connectionCmp, freeKeys);
     hashtable blacklist_connections = htnew(32, addrCmp, freeKeys);
 
     while (0 <= select(1 + maxfd, &rd_set, NULL, NULL, NULL)) {
 
         if (FD_ISSET(tap, &rd_set)) {
-            sendTap(tap, uc, bc_addr, &known_addresses, &known_connections);
+            sendTap(tap, uc, bc_addr, &known_mac_addresses, &known_connections);
         } else if (FD_ISSET(uc, &rd_set)) {
-            receiveBCorUC(tap, uc, &known_addresses, &known_connections,
+            receiveBCorUC(tap, uc, &known_mac_addresses, &known_connections,
                           &blacklist_connections, &conf);
         } else if (FD_ISSET(bc, &rd_set)) {
-            receiveBCorUC(tap, bc, &known_addresses, &known_connections,
+            receiveBCorUC(tap, bc, &known_mac_addresses, &known_connections,
                           &blacklist_connections, &conf);
         } else if (FD_ISSET(tcp_server, &rd_set)) {
             receiveBlacklistedConnection(tcp_server, &blacklist_connections);
