@@ -877,21 +877,66 @@ tcp_server, hashtable conf) {
     }
 }
 
-/* Connect to service/host
+/* Connect To the specified host and service
  *
  */
 
-/***
- * Try to connect
- * This function will create a new socket and try to connect to the
- * socketaddr contained within the provided addrinfo structure.
+/* Timed Connect
  *
- * @param ai    An addr info structure.
- * @return      -1 or a socket connected to the sockaddr within ai.
+ * This function tries to connect to the specified sockaddr if a connection can
+ * be made within tval time.
+ *
+ * The socket is temporarily put in non-blocking mode, a connection is tarted,
+ * and select is used to do the actual timeout logic.
  */
-int tryConnect(struct addrinfo *ai) {
+static
+int timedConnect(int              sock,
+                 struct sockaddr* addr,
+                 socklen_t        leng,
+                 struct timeval   tval) {
+
+    int status = -1;
+
+    int ostate = fcntl(sock, F_GETFL, NULL);
+    int nstate = ostate | O_NONBLOCK;
+
+    if( ostate < 0 || fcntl(sock, F_SETFL, nstate) < 0) {
+        perror("fcntl");
+    }
+    else {
+        status = connect(sock, addr, leng);
+        if(status < 0 && errno == EINPROGRESS) {
+            fd_set wrset;
+            int maxfd = mkfdset(&wrset, sock, 0);
+            status = (0 < select(maxfd+1, NULL, &wrset, NULL, &tval) ?
+                      0 : -1);
+        }
+
+        ostate = fcntl(sock, F_GETFL, NULL);
+        nstate = ostate & ~O_NONBLOCK;
+        if(ostate < 0 || fcntl(sock, F_SETFL, &nstate) < 0) {
+            perror("fcntl");
+        }
+    }
+
+
+    return status;
+
+}
+
+/* Try to connect
+ * ai       An addrinfo structure.
+ * returns  -1 or a socket connected to the sockaddr within ai.
+ *
+ * This function will create a new socket and try to connect to the socketaddr
+ * contained within the provided addrinfo structure.
+ */
+static
+int tryConnect(struct addrinfo* ai) {
+    assert(ai);
+    struct timeval tv = {1,0};
     int s = socket(ai->ai_family, ai->ai_socktype, 0);
-    if (s != -1 && 0 != connect(s, ai->ai_addr, ai->ai_addrlen)) {
+    if(s != -1 && 0 != timedConnect(s, ai->ai_addr, ai->ai_addrlen, tv)) {
         close(s);
         s = -1;
     }
@@ -899,29 +944,33 @@ int tryConnect(struct addrinfo *ai) {
     return s;
 }
 
+
 static
-int connectTo(const char *name, const char *service) {
+int connectTo(const char* name, const char* svc) {
+    assert(name != NULL);
+    assert(svc  != NULL);
+
     int s = -1;
 
     struct addrinfo hint;
     bzero(&hint, sizeof(struct addrinfo));
     hint.ai_socktype = SOCK_STREAM;
-    hint.ai_family   = AF_INET;
 
-    struct addrinfo *info = NULL;
+    struct addrinfo* info = NULL;
 
-    if (0 == getaddrinfo(name, service, &hint, &info) &&
-        NULL != info) {
-        struct addrinfo *p = info;
+    if (0    == getaddrinfo(name, svc, &hint, &info) &&
+        NULL != info ) {
+
+        struct addrinfo* p = info;
 
         s = tryConnect(p);
-
         while (s == -1 && p->ai_next != NULL) {
             p = p->ai_next;
             s = tryConnect(p);
         }
-
     }
+
+    freeaddrinfo(info);
     return s;
 }
 
